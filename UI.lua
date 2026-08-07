@@ -651,8 +651,28 @@ function SL:InitializeUI()
   local titleBar = CreateFrame("Frame", nil, frame, BackdropTemplateMixin and "BackdropTemplate" or nil)
   titleBar:SetPoint("TOPLEFT", 1, -1); titleBar:SetPoint("TOPRIGHT", -1, -1); titleBar:SetHeight(30); Backdrop(titleBar, 1, COLORS.frame, COLORS.frame)
   local title = Text(titleBar, "LEFT", 16, true); title:SetPoint("LEFT", 10, 0); title:SetText("Goblin")
-  local section = Text(titleBar, "LEFT", 13, true); section:SetPoint("LEFT", title, "RIGHT", 18, 0); section:SetText("Inventory")
-  SetColor(function(...) section:SetTextColor(...) end, COLORS.indicator)
+  -- Tabs: Summary and Inventory. Whichever is active is bold yellow; the
+  -- other is dim and clickable. Click to switch views in-place.
+  local tabSummary = CreateFrame("Button", nil, titleBar)
+  tabSummary:SetSize(72, 22); tabSummary:SetPoint("LEFT", title, "RIGHT", 18, 0)
+  tabSummary.text = tabSummary:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+  tabSummary.text:SetPoint("CENTER"); tabSummary.text:SetFont(BODY_BOLD_FONT, 13); tabSummary.text:SetText("Summary")
+  local tabInventory = CreateFrame("Button", nil, titleBar)
+  tabInventory:SetSize(72, 22); tabInventory:SetPoint("LEFT", tabSummary, "RIGHT", 8, 0)
+  tabInventory.text = tabInventory:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+  tabInventory.text:SetPoint("CENTER"); tabInventory.text:SetFont(BODY_BOLD_FONT, 13); tabInventory.text:SetText("Inventory")
+  self.sectionTabs = {
+    summary = tabSummary, inventory = tabInventory,
+    updateHighlight = function()
+      local activeSummary = self.uiMode == "summary"
+      local sc = activeSummary and COLORS.indicator or COLORS_SUBTLE
+      local ic = activeSummary and COLORS_SUBTLE or COLORS.indicator
+      tabSummary.text:SetTextColor(sc[1], sc[2], sc[3])
+      tabInventory.text:SetTextColor(ic[1], ic[2], ic[3])
+    end,
+  }
+  tabSummary:SetScript("OnClick", function() self:ShowSummary() end)
+  tabInventory:SetScript("OnClick", function() self:ShowInventory() end)
   local close = Button(titleBar, "×", 24, function() frame:Hide() end); close:SetPoint("RIGHT", -3, 0)
   local options = Button(titleBar, "Sources", 70, function() self.options:SetShown(not self.options:IsShown()); self:RefreshOptions() end); options:SetPoint("RIGHT", close, "LEFT", -6, 0)
   local history = Button(titleBar, "History", 66, function() self:ToggleHistory() end); history:SetPoint("RIGHT", options, "LEFT", -6, 0)
@@ -739,7 +759,11 @@ function SL:InitializeUI()
   frame:SetScript("OnMouseWheel", function(_, delta)
     scroll:SetValue(math.max(0, math.min(select(2, scroll:GetMinMaxValues()), scroll:GetValue() - delta * 3)))
   end)
-  self:CreateOptions(); self:RefreshUI()
+  self:CreateOptions()
+  if self.CreateSummary then self:CreateSummary() end
+  self.uiMode = "inventory"
+  self:ApplyUIMode()
+  self:RefreshUI()
 end
 
 function SL:RefreshUI(fromScroll)
@@ -779,6 +803,7 @@ function SL:RefreshUI(fromScroll)
   self:RefreshOptions()
   if self.MaybeSnapshot then self:MaybeSnapshot(itemValue, gold) end
   if self.RefreshHistoryPanel then self:RefreshHistoryPanel() end
+  if self.RefreshSummary then self:RefreshSummary() end
 end
 
 function SL:ToggleUI()
