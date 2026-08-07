@@ -6,6 +6,14 @@ SL.CATEGORY_LABELS = {
   bags = "Bags", bank = "Bank", equipped = "Equipped", mail = "Mail",
   auctions = "Auctions", guild = "Guild",
 }
+-- Per-source stale thresholds. bags/equipped tick constantly at login; bank,
+-- mail, auctions and guild only refresh when the player visits them, so their
+-- freshness bar is more generous.
+SL.STALE_SECONDS = {
+  bags = 1 * 86400, equipped = 1 * 86400, gold = 1 * 86400,
+  bank = 7 * 86400, mail = 7 * 86400, auctions = 3 * 86400,
+  guildTab = 14 * 86400, guildGold = 14 * 86400,
+}
 
 local DEFAULTS = {
   settings = {
@@ -92,6 +100,91 @@ end
 
 function SL:IsGuildGoldIncluded(guildKey)
   return self.db.settings.guildGold[guildKey] ~= false
+end
+
+local function FormatAge(seconds)
+  if not seconds then return "never" end
+  if seconds < 60 then return "just now" end
+  if seconds < 3600 then return string.format("%dm ago", math.floor(seconds / 60)) end
+  if seconds < 86400 then return string.format("%dh ago", math.floor(seconds / 3600)) end
+  return string.format("%dd ago", math.floor(seconds / 86400))
+end
+
+SL.FormatAge = function(_, seconds) return FormatAge(seconds) end
+
+local function FreshnessStatus(stamp, threshold)
+  if not stamp then return "never", nil end
+  local age = time() - stamp
+  if threshold and age >= threshold then return "stale", age end
+  return "fresh", age
+end
+
+function SL:GetLocationFreshness(characterKey, location)
+  local character = self.db.characters and self.db.characters[characterKey]
+  if not character then return { status = "never" } end
+  local stamp
+  if location == "gold" then stamp = character.moneyUpdated
+  else stamp = character.updated and character.updated[location] end
+  local status, age = FreshnessStatus(stamp, self.STALE_SECONDS[location] or self.STALE_SECONDS[location == "gold" and "gold" or "bags"])
+  return { status = status, age = age, stamp = stamp, label = FormatAge(age) }
+end
+
+function SL:GetGuildFreshness(guildKey, tab)
+  local guild = self.db.guilds and self.db.guilds[guildKey]
+  if not guild then return { status = "never" } end
+  local stamp
+  if tab == "gold" then stamp = guild.goldUpdated or guild.updated
+  elseif tab then stamp = guild.tabUpdated and guild.tabUpdated[tab]
+  else stamp = guild.updated end
+  local threshold = self.STALE_SECONDS[tab == "gold" and "guildGold" or "guildTab"]
+  local status, age = FreshnessStatus(stamp, threshold)
+  return { status = status, age = age, stamp = stamp, label = FormatAge(age) }
+end
+
+-- Returns { {kind="character"|"guildTab", key=..., location=..., label=...}, ... }
+-- for every source that has never been scanned or is stale.
+function SL:GetStaleSources()
+  local out = {}
+  for key, character in pairs(self.db.characters or {}) do
+    if self:IsCharacterIncluded(key) then
+      for _, location in ipairs(self.CATEGORIES) do
+        if location ~= "guild" and self:IsCharacterCategoryIncluded(key, location) then
+          local info = self:GetLocationFreshness(key, location)
+          if info.status ~= "fresh" then
+            out[#out + 1] = { kind = "character", key = key, location = location, status = info.status, label = info.label, name = character.name, realm = character.realm }
+          end
+        end
+      end
+      if self:IsCharacterGoldIncluded(key) then
+        local info = self:GetLocationFreshness(key, "gold")
+        if info.status ~= "fresh" then
+          out[#out + 1] = { kind = "character", key = key, location = "gold", status = info.status, label = info.label, name = character.name, realm = character.realm }
+        end
+      end
+    end
+  end
+  for key, guild in pairs(self.db.guilds or {}) do
+    if self:IsGuildIncluded(key) then
+      local tabs = {}
+      for tab in pairs(guild.tabs or {}) do tabs[#tabs + 1] = tab end
+      table.sort(tabs)
+      for _, tab in ipairs(tabs) do
+        if self:IsGuildTabIncluded(key, tab) then
+          local info = self:GetGuildFreshness(key, tab)
+          if info.status ~= "fresh" then
+            out[#out + 1] = { kind = "guildTab", key = key, location = tab, status = info.status, label = info.label, guildName = guild.name }
+          end
+        end
+      end
+      if self:IsGuildGoldIncluded(key) then
+        local info = self:GetGuildFreshness(key, "gold")
+        if info.status ~= "fresh" then
+          out[#out + 1] = { kind = "guildTab", key = key, location = "gold", status = info.status, label = info.label, guildName = guild.name }
+        end
+      end
+    end
+  end
+  return out
 end
 
 function SL:NormalizeItem(link)

@@ -49,6 +49,7 @@ function SL:CommitCharacterLocation(location, items)
   character.locations[location] = items
   character.updated = character.updated or {}
   character.updated[location] = time()
+  character.lastScan = time()
   if self.RefreshUI then self:RefreshUI() end
 end
 
@@ -110,11 +111,14 @@ function SL:ScanGuildBank()
     AddItem(tabItems, link, count)
   end
   guild.tabs[tab] = tabItems
+  guild.tabUpdated = guild.tabUpdated or {}
+  guild.tabUpdated[tab] = time()
   guild.items = NewItemTable()
   for _, savedTab in pairs(guild.tabs) do
     for _, item in pairs(savedTab) do AddItem(guild.items, item.link, item.count) end
   end
   guild.gold = GetGuildBankMoney and GetGuildBankMoney() or guild.gold
+  guild.goldUpdated = time()
   guild.updated = time()
   if self.RefreshUI then self:RefreshUI() end
 end

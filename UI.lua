@@ -74,6 +74,15 @@ function SL:SetSort(key)
   self:RefreshUI()
 end
 
+local COLORS_GUILD = { 0.55, 0.72, 0.92 }
+local COLORS_CLASS = { 0.68, 0.70, 0.66 }
+local COLORS_STALE = {
+  fresh = { 0.30, 0.86, 0.50 },
+  stale = { 0.99, 0.62, 0.20 },
+  never = { 0.55, 0.55, 0.58 },
+}
+local COLORS_SUBTLE = { 0.58, 0.63, 0.61 }
+
 local function CreateCheckbox(parent, label, get, set)
   local check = CreateFrame("CheckButton", nil, parent, BackdropTemplateMixin and "BackdropTemplate" or nil)
   check:SetSize(16, 16); Backdrop(check, 1, COLORS.primaryAlt, COLORS.active)
@@ -88,118 +97,335 @@ local function CreateCheckbox(parent, label, get, set)
   return check
 end
 
+-- Pill checkbox: filled yellow square + label, sized to fit inside a card cell.
+local function PillCheckbox(parent, label, get, set, width)
+  local pill = CreateFrame("Button", nil, parent, BackdropTemplateMixin and "BackdropTemplate" or nil)
+  pill:SetSize(width or 148, 22); Backdrop(pill, 1, COLORS.primary, COLORS.primary)
+  local box = CreateFrame("Frame", nil, pill, BackdropTemplateMixin and "BackdropTemplate" or nil)
+  box:SetSize(13, 13); box:SetPoint("LEFT", 6, 0); Backdrop(box, 1, COLORS.primaryAlt, COLORS.active)
+  box.fill = box:CreateTexture(nil, "ARTWORK"); box.fill:SetPoint("TOPLEFT", 2, -2); box.fill:SetPoint("BOTTOMRIGHT", -2, 2)
+  SetColor(function(...) box.fill:SetColorTexture(...) end, COLORS.indicator)
+  pill.text = Text(pill, "LEFT", 12); pill.text:SetPoint("LEFT", box, "RIGHT", 8, 0); pill.text:SetPoint("RIGHT", -4, 0)
+  pill.text:SetText(label); SetColor(function(...) pill.text:SetTextColor(...) end, COLORS.text)
+  pill.highlight = pill:CreateTexture(nil, "HIGHLIGHT"); pill.highlight:SetAllPoints()
+  SetColor(function(...) pill.highlight:SetColorTexture(...) end, COLORS.activeAlt, 0.05)
+  pill.Update = function() box.fill:SetShown(get() and true or false) end
+  pill:SetScript("OnClick", function() set(not get() and true or false); pill.Update(); SL:RefreshUI() end)
+  pill:SetScript("OnShow", pill.Update); pill.Update()
+  return pill
+end
+
+-- Guild switch toggle: yellow-on / gray-off pill with a moving thumb.
+local function ToggleSwitch(parent, get, set)
+  local sw = CreateFrame("Button", nil, parent, BackdropTemplateMixin and "BackdropTemplate" or nil)
+  sw:SetSize(34, 16); Backdrop(sw, 1, COLORS.primaryAlt, COLORS.active)
+  sw.thumb = sw:CreateTexture(nil, "ARTWORK")
+  sw.thumb:SetSize(14, 12)
+  SetColor(function(...) sw.thumb:SetColorTexture(...) end, COLORS.indicator)
+  sw.Update = function()
+    local on = get() and true or false
+    if on then
+      SetColor(function(...) sw:SetBackdropColor(...) end, COLORS.primary)
+      SetColor(function(...) sw.thumb:SetColorTexture(...) end, COLORS.indicator)
+      sw.thumb:ClearAllPoints(); sw.thumb:SetPoint("RIGHT", -2, 0)
+    else
+      SetColor(function(...) sw:SetBackdropColor(...) end, COLORS.primaryAlt)
+      sw.thumb:SetColorTexture(0.55, 0.55, 0.58, 1)
+      sw.thumb:ClearAllPoints(); sw.thumb:SetPoint("LEFT", 2, 0)
+    end
+  end
+  sw:SetScript("OnClick", function() set(not get() and true or false); sw.Update(); SL:RefreshUI() end)
+  sw:SetScript("OnShow", sw.Update); sw.Update()
+  return sw
+end
+
+local function FreshnessBadge(parent)
+  local frame = CreateFrame("Frame", nil, parent); frame:SetSize(120, 14)
+  frame.dot = frame:CreateTexture(nil, "ARTWORK"); frame.dot:SetSize(6, 6); frame.dot:SetPoint("LEFT", 0, 0)
+  frame.dot:SetTexture("Interface\\Buttons\\WHITE8X8")
+  frame.text = Text(frame, "LEFT", 11); frame.text:SetPoint("LEFT", frame.dot, "RIGHT", 6, 0); frame.text:SetPoint("RIGHT", 0, 0)
+  frame.Set = function(status, label)
+    local c = COLORS_STALE[status] or COLORS_STALE.never
+    frame.dot:SetColorTexture(c[1], c[2], c[3], 1)
+    if status == "never" then frame.text:SetText("Never scanned")
+    else frame.text:SetText("Scanned " .. (label or "?")) end
+    frame.text:SetTextColor(0.72, 0.75, 0.72)
+  end
+  return frame
+end
+
+-- Card container with a clickable header row and a collapsible body Frame.
+local function CreateCard(parent)
+  local card = CreateFrame("Frame", nil, parent, BackdropTemplateMixin and "BackdropTemplate" or nil)
+  Backdrop(card, 1, COLORS.primary, COLORS.frame)
+  card.header = CreateFrame("Button", nil, card, BackdropTemplateMixin and "BackdropTemplate" or nil)
+  card.header:SetHeight(36); card.header:SetPoint("TOPLEFT", 0, 0); card.header:SetPoint("TOPRIGHT", 0, 0)
+  Backdrop(card.header, 1, COLORS.primaryAlt, COLORS.primaryAlt)
+  local hl = card.header:CreateTexture(nil, "HIGHLIGHT"); hl:SetAllPoints()
+  SetColor(function(...) hl:SetColorTexture(...) end, COLORS.activeAlt, 0.05)
+  card.caret = Text(card.header, "LEFT", 11); card.caret:SetPoint("LEFT", 10, 0); card.caret:SetText("v")
+  SetColor(function(...) card.caret:SetTextColor(...) end, COLORS.indicator)
+  card.body = CreateFrame("Frame", nil, card); card.body:SetPoint("TOPLEFT", 0, -36); card.body:SetPoint("TOPRIGHT", 0, -36)
+  card.expanded = true
+  card.SetExpanded = function(v)
+    card.expanded = v and true or false
+    card.caret:SetText(card.expanded and "v" or ">")
+    card.body:SetShown(card.expanded)
+    card:SetHeight(card.expanded and (36 + (card.bodyHeight or 0)) or 36)
+    if SL.RelayoutSources then SL:RelayoutSources() end
+  end
+  card.header:SetScript("OnClick", function() card.SetExpanded(not card.expanded) end)
+  return card
+end
+
+-- Sources panel: dark-card layout matching the goblin-sources-panel mockup.
+-- One card per character (pills for gold + each location) and one per guild
+-- (master switch + guild-gold pill + one pill per known tab). All cards share
+-- the same collapsible frame so users can hide seldom-touched alts.
+
+local CARD_PADDING_X = 12
+local CARD_BODY_ROW_H = 24
+local CARD_BODY_TOP = 6
+local CARD_BODY_BOTTOM = 8
+local CARDS_GAP = 8
+
 function SL:CreateOptions()
   local frame = CreateFrame("Frame", nil, self.frame, BackdropTemplateMixin and "BackdropTemplate" or nil)
-  frame:SetPoint("TOPRIGHT", self.frame, "TOPRIGHT", -8, -70)
-  frame:SetSize(360, 552); frame:SetFrameLevel(self.frame:GetFrameLevel() + 20); Backdrop(frame, 1, COLORS.primaryAlt); frame:Hide()
+  frame:SetPoint("TOPRIGHT", self.frame, "TOPRIGHT", -8, -40)
+  frame:SetSize(560, 620); frame:SetFrameLevel(self.frame:GetFrameLevel() + 20); Backdrop(frame, 1, COLORS.primary, COLORS.frame); frame:Hide()
   self.options = frame
+
   local titleBar = CreateFrame("Frame", nil, frame, BackdropTemplateMixin and "BackdropTemplate" or nil)
-  titleBar:SetPoint("TOPLEFT", 1, -1); titleBar:SetPoint("TOPRIGHT", -1, -1); titleBar:SetHeight(32); Backdrop(titleBar, 1, COLORS.frame, COLORS.frame)
-  local title = Text(titleBar, "LEFT", 14, true); title:SetPoint("LEFT", 10, 0); title:SetText("Included in net worth")
-  local close = Button(frame, "Close", 52, function() frame:Hide() end); close:SetPoint("TOPRIGHT", -10, -6)
-  local y = -46
-  local gold = CreateCheckbox(frame, "Character gold", function() return self.db.settings.includeGold end, function(v) self.db.settings.includeGold = v end)
-  gold:SetPoint("TOPLEFT", 10, y); y = y - 27
-  local guildGold = CreateCheckbox(frame, "Guild bank gold", function() return self.db.settings.includeGuildGold end, function(v) self.db.settings.includeGuildGold = v end)
-  guildGold:SetPoint("TOPLEFT", 10, y); y = y - 34
-  local soulbound = CreateCheckbox(frame, "Soulbound items", function() return self.db.settings.includeSoulbound end, function(v) self.db.settings.includeSoulbound = v end)
-  soulbound:SetPoint("TOPLEFT", 10, y); y = y - 34
-  for _, category in ipairs(self.CATEGORIES) do
-    local key = category
-    local check = CreateCheckbox(frame, self.CATEGORY_LABELS[key], function() return self.db.settings.categories[key] end, function(v) self.db.settings.categories[key] = v end)
-    check:SetPoint("TOPLEFT", 10, y); y = y - 27
-  end
-  self.optionsDynamicTop = y - 8
+  titleBar:SetPoint("TOPLEFT", 1, -1); titleBar:SetPoint("TOPRIGHT", -1, -1); titleBar:SetHeight(36); Backdrop(titleBar, 1, COLORS.frame, COLORS.frame)
+  local brand = Text(titleBar, "LEFT", 15, true); brand:SetPoint("LEFT", 12, 0); brand:SetText("Goblin")
+  SetColor(function(...) brand:SetTextColor(...) end, COLORS.text)
+  local section = Text(titleBar, "LEFT", 15, true); section:SetPoint("LEFT", brand, "RIGHT", 8, 0); section:SetText("Sources")
+  SetColor(function(...) section:SetTextColor(...) end, COLORS.indicator)
+  local close = Button(titleBar, "×", 26, function() frame:Hide() end); close:SetPoint("RIGHT", -6, 0)
+
+  local intro = CreateFrame("Frame", nil, frame, BackdropTemplateMixin and "BackdropTemplate" or nil)
+  intro:SetPoint("TOPLEFT", 1, -37); intro:SetPoint("TOPRIGHT", -1, -37); intro:SetHeight(48); Backdrop(intro, 1, COLORS.primary, COLORS.primary)
+  local heading = Text(intro, "LEFT", 13, true); heading:SetPoint("TOPLEFT", 12, -8); heading:SetText("Included in net worth")
+  SetColor(function(...) heading:SetTextColor(...) end, COLORS.text)
+  local desc = Text(intro, "LEFT", 11); desc:SetPoint("TOPLEFT", 12, -26); desc:SetText("Choose the characters, locations, and guild banks Goblin should count.")
+  SetColor(function(...) desc:SetTextColor(...) end, COLORS_SUBTLE)
+  local enableAll = Button(intro, "Enable all", 72, function() self:BulkSetSources(true) end); enableAll:SetPoint("TOPRIGHT", -90, -12)
+  Backdrop(enableAll, 0, COLORS.primary, COLORS.primary); SetColor(function(...) enableAll.label:SetTextColor(...) end, COLORS.indicator)
+  local disableAll = Button(intro, "Disable all", 76, function() self:BulkSetSources(false) end); disableAll:SetPoint("TOPRIGHT", -10, -12)
+  Backdrop(disableAll, 0, COLORS.primary, COLORS.primary); SetColor(function(...) disableAll.label:SetTextColor(...) end, COLORS_SUBTLE)
+
   local scroll = CreateFrame("ScrollFrame", nil, frame, "UIPanelScrollFrameTemplate")
-  scroll:SetPoint("TOPLEFT", 4, self.optionsDynamicTop)
-  scroll:SetPoint("BOTTOMRIGHT", -28, 10)
-  local content = CreateFrame("Frame", nil, scroll)
-  content:SetSize(316, 1)
-  scroll:SetScrollChild(content)
-  self.optionsScroll = scroll
-  self.optionsContent = content
+  scroll:SetPoint("TOPLEFT", 4, -88); scroll:SetPoint("BOTTOMRIGHT", -28, 34)
+  local content = CreateFrame("Frame", nil, scroll); content:SetSize(524, 1); scroll:SetScrollChild(content)
+  self.optionsScroll, self.optionsContent = scroll, content
+
+  local footer = CreateFrame("Frame", nil, frame, BackdropTemplateMixin and "BackdropTemplate" or nil)
+  footer:SetPoint("BOTTOMLEFT", 1, 1); footer:SetPoint("BOTTOMRIGHT", -1, 1); footer:SetHeight(30); Backdrop(footer, 1, COLORS.frame, COLORS.frame)
+  local footerHint = Text(footer, "LEFT", 11); footerHint:SetPoint("LEFT", 12, 0); footerHint:SetText("Changes update net worth immediately.")
+  SetColor(function(...) footerHint:SetTextColor(...) end, COLORS_SUBTLE)
+  local staleText = Text(footer, "RIGHT", 11, true); staleText:SetPoint("RIGHT", -12, 0); self.staleFooter = staleText
   return frame
+end
+
+-- Bulk enable/disable used by the Enable all / Disable all header buttons.
+function SL:BulkSetSources(enabled)
+  local v = enabled and true or false
+  for key in pairs(self.db.characters or {}) do
+    self.db.settings.characters[key] = v
+    self.db.settings.characterGold[key] = v
+    self.db.settings.characterCategories[key] = self.db.settings.characterCategories[key] or {}
+    for _, category in ipairs(self.CATEGORIES) do
+      if category ~= "guild" then self.db.settings.characterCategories[key][category] = v end
+    end
+  end
+  for key, guild in pairs(self.db.guilds or {}) do
+    self.db.settings.guilds[key] = v
+    self.db.settings.guildGold[key] = v
+    self.db.settings.guildTabs[key] = self.db.settings.guildTabs[key] or {}
+    for tab in pairs(guild.tabs or {}) do self.db.settings.guildTabs[key][tab] = v end
+  end
+  self:RefreshUI()
+end
+
+local function FormatClass(class)
+  if not class then return nil end
+  local pretty = class:sub(1, 1) .. class:sub(2):lower()
+  return pretty
+end
+
+function SL:BuildCharacterCard(parent, characterKey)
+  local character = self.db.characters[characterKey]
+  local card = CreateCard(parent)
+  local nameStr = Text(card.header, "LEFT", 13, true); nameStr:SetPoint("LEFT", 28, 0)
+  nameStr:SetText(character.name or "?"); SetColor(function(...) nameStr:SetTextColor(...) end, COLORS.text)
+  local realm = Text(card.header, "LEFT", 13, true); realm:SetPoint("LEFT", nameStr, "RIGHT", 8, 0)
+  realm:SetText("— " .. (character.realm or "?")); SetColor(function(...) realm:SetTextColor(...) end, COLORS.indicator)
+  local meta = Text(card.header, "LEFT", 11); meta:SetPoint("LEFT", realm, "RIGHT", 8, 0); meta:SetPoint("RIGHT", -140, 0)
+  local class = FormatClass(character.class)
+  if character.guildName then
+    meta:SetText(string.format("|cff8fb6f0<%s>|r  |cffababab· %s|r", character.guildName, class or ""))
+  else
+    meta:SetText(string.format("|cff787878No guild|r  |cffababab· %s|r", class or ""))
+  end
+  local badge = FreshnessBadge(card.header); badge:SetPoint("RIGHT", -12, 0)
+  local locations = { "bags", "bank", "equipped", "mail", "auctions" }
+  local newestStamp, newestStatus
+  for _, loc in ipairs(locations) do
+    local info = self:GetLocationFreshness(characterKey, loc)
+    if info.stamp and (not newestStamp or info.stamp > newestStamp) then newestStamp, newestStatus = info.stamp, info.status end
+  end
+  local goldInfo = self:GetLocationFreshness(characterKey, "gold")
+  if goldInfo.stamp and (not newestStamp or goldInfo.stamp > newestStamp) then newestStamp, newestStatus = goldInfo.stamp, goldInfo.status end
+  badge.Set(newestStamp and newestStatus or "never", newestStamp and self:FormatAge(time() - newestStamp) or nil)
+
+  local pillWidth = math.floor((512 - CARD_PADDING_X * 2 - 8) / 3)
+  local pills = {
+    { key = "gold", label = "Gold" },
+    { key = "bags", label = "Bags" },
+    { key = "bank", label = "Bank" },
+    { key = "equipped", label = "Equipped" },
+    { key = "mail", label = "Mail" },
+    { key = "auctions", label = "Auctions" },
+  }
+  for index, pillDef in ipairs(pills) do
+    local col = ((index - 1) % 3)
+    local row = math.floor((index - 1) / 3)
+    local get, set
+    if pillDef.key == "gold" then
+      get = function() return self:IsCharacterGoldIncluded(characterKey) end
+      set = function(v) self.db.settings.characterGold[characterKey] = v end
+    else
+      local loc = pillDef.key
+      get = function() return self:IsCharacterCategoryIncluded(characterKey, loc) end
+      set = function(v)
+        self.db.settings.characterCategories[characterKey] = self.db.settings.characterCategories[characterKey] or {}
+        self.db.settings.characterCategories[characterKey][loc] = v
+      end
+    end
+    local pill = PillCheckbox(card.body, pillDef.label, get, set, pillWidth)
+    pill:SetPoint("TOPLEFT", CARD_PADDING_X + col * (pillWidth + 4), -(CARD_BODY_TOP + row * (CARD_BODY_ROW_H)))
+  end
+  card.bodyHeight = CARD_BODY_TOP + CARD_BODY_ROW_H * 2 + CARD_BODY_BOTTOM
+  card.body:SetHeight(card.bodyHeight)
+  card:SetHeight(36 + card.bodyHeight)
+  return card
+end
+
+function SL:BuildGuildCard(parent, guildKey)
+  local guild = self.db.guilds[guildKey]
+  local card = CreateCard(parent)
+  local guildName = guild.name or guildKey
+  local realmName = guild.realm or (guildKey:match(" %- (.+)$")) or ""
+  local nameStr = Text(card.header, "LEFT", 13, true); nameStr:SetPoint("LEFT", 28, 0)
+  nameStr:SetText(guildName); SetColor(function(...) nameStr:SetTextColor(...) end, COLORS.text)
+  local realm = Text(card.header, "LEFT", 13, true); realm:SetPoint("LEFT", nameStr, "RIGHT", 8, 0)
+  realm:SetText("— " .. realmName); SetColor(function(...) realm:SetTextColor(...) end, COLORS.indicator)
+  local memberNames = {}
+  for _, character in pairs(self.db.characters) do
+    if character.guildKey == guildKey then memberNames[#memberNames + 1] = character.name or "?" end
+  end
+  table.sort(memberNames)
+  local tabCount = 0
+  for _ in pairs(guild.tabs or {}) do tabCount = tabCount + 1 end
+  local memberText = #memberNames > 0 and table.concat(memberNames, ", ") or "No associated character"
+  local meta = Text(card.header, "LEFT", 11); meta:SetPoint("LEFT", realm, "RIGHT", 8, 0); meta:SetPoint("RIGHT", -60, 0)
+  meta:SetText(string.format("|cff9c9c9c%s  · %d tab%s scanned|r", memberText, tabCount, tabCount == 1 and "" or "s"))
+  local sw = ToggleSwitch(card.header, function() return self:IsGuildIncluded(guildKey) end, function(v) self.db.settings.guilds[guildKey] = v end)
+  sw:SetPoint("RIGHT", -12, 0)
+
+  local pillWidth = math.floor((512 - CARD_PADDING_X * 2 - 8) / 3)
+  local pillDefs = { { key = "gold", label = "Guild gold" } }
+  local tabs = {}
+  for tab in pairs(guild.tabs or {}) do tabs[#tabs + 1] = tab end
+  table.sort(tabs)
+  for _, tab in ipairs(tabs) do
+    local label = (guild.tabNames and guild.tabNames[tab]) or ("Tab " .. tab)
+    pillDefs[#pillDefs + 1] = { key = tab, label = tab .. ": " .. label }
+  end
+  for index, pillDef in ipairs(pillDefs) do
+    local col = ((index - 1) % 3)
+    local row = math.floor((index - 1) / 3)
+    local get, set
+    if pillDef.key == "gold" then
+      get = function() return self:IsGuildGoldIncluded(guildKey) end
+      set = function(v) self.db.settings.guildGold[guildKey] = v end
+    else
+      local tabIndex = pillDef.key
+      get = function() return self:IsGuildTabIncluded(guildKey, tabIndex) end
+      set = function(v)
+        self.db.settings.guildTabs[guildKey] = self.db.settings.guildTabs[guildKey] or {}
+        self.db.settings.guildTabs[guildKey][tabIndex] = v
+      end
+    end
+    local pill = PillCheckbox(card.body, pillDef.label, get, set, pillWidth)
+    pill:SetPoint("TOPLEFT", CARD_PADDING_X + col * (pillWidth + 4), -(CARD_BODY_TOP + row * CARD_BODY_ROW_H))
+  end
+  local rowsUsed = math.max(1, math.ceil(#pillDefs / 3))
+  card.bodyHeight = CARD_BODY_TOP + CARD_BODY_ROW_H * rowsUsed + CARD_BODY_BOTTOM
+  card.body:SetHeight(card.bodyHeight)
+  card:SetHeight(36 + card.bodyHeight)
+  return card
+end
+
+function SL:RelayoutSources()
+  local y = -4
+  for _, group in ipairs(self.sourceGroups or {}) do
+    group.label:ClearAllPoints(); group.label:SetPoint("TOPLEFT", 10, y)
+    group.count:ClearAllPoints(); group.count:SetPoint("LEFT", group.label, "RIGHT", 8, 0)
+    y = y - 22
+    for _, card in ipairs(group.cards) do
+      card:ClearAllPoints(); card:SetPoint("TOPLEFT", 6, y); card:SetPoint("TOPRIGHT", -6, y)
+      y = y - (card:GetHeight() + CARDS_GAP)
+    end
+    y = y - 8
+  end
+  self.optionsContent:SetHeight(math.max(1, -y + 8))
 end
 
 function SL:RefreshOptions()
   if not self.options or not self.options:IsShown() then return end
-  for _, widget in ipairs(self.optionDynamic or {}) do widget:Hide(); widget:SetParent(nil) end
-  self.optionDynamic = {}
+  for _, group in ipairs(self.sourceGroups or {}) do
+    for _, card in ipairs(group.cards) do card:Hide(); card:SetParent(nil) end
+    group.label:Hide(); group.label:SetParent(nil)
+    group.count:Hide(); group.count:SetParent(nil)
+  end
+  self.sourceGroups = {}
   local content = self.optionsContent
-  local y = -2
-  local header = Text(content, "LEFT", 12, true); header:SetPoint("TOPLEFT", 8, y); header:SetText("Characters"); SetColor(function(...) header:SetTextColor(...) end, COLORS.indicator)
-  self.optionDynamic[#self.optionDynamic + 1] = header; y = y - 24
+
+  local characterLabel = Text(content, "LEFT", 12, true); characterLabel:SetText("CHARACTERS")
+  SetColor(function(...) characterLabel:SetTextColor(...) end, COLORS.indicator)
   local characterKeys = {}
-  for key in pairs(self.db.characters) do characterKeys[#characterKeys + 1] = key end
+  for key in pairs(self.db.characters or {}) do characterKeys[#characterKeys + 1] = key end
   table.sort(characterKeys)
-  for _, key in ipairs(characterKeys) do
-    local characterKey = key
-    local character = self.db.characters[key]
-    local check = CreateCheckbox(content, key, function() return self:IsCharacterIncluded(characterKey) end, function(v) self.db.settings.characters[characterKey] = v end)
-    check:SetPoint("TOPLEFT", 6, y); check:SetChecked(self:IsCharacterIncluded(key)); y = y - 21
-    self.optionDynamic[#self.optionDynamic + 1] = check
-    local guildText = Text(content, "LEFT", 11)
-    guildText:SetPoint("TOPLEFT", 30, y)
-    guildText:SetText(character.guildName and ("Guild: " .. character.guildName) or "Guild: none recorded")
-    guildText:SetTextColor(0.58, 0.63, 0.61)
-    self.optionDynamic[#self.optionDynamic + 1] = guildText; y = y - 20
-    local goldCheck = CreateCheckbox(content, "Gold", function() return self:IsCharacterGoldIncluded(characterKey) end, function(v) self.db.settings.characterGold[characterKey] = v end)
-    goldCheck:SetPoint("TOPLEFT", 30, y); goldCheck:SetChecked(self:IsCharacterGoldIncluded(key)); y = y - 23
-    self.optionDynamic[#self.optionDynamic + 1] = goldCheck
-    for _, category in ipairs(self.CATEGORIES) do
-      if category ~= "guild" then
-        local location = category
-        local sourceCheck = CreateCheckbox(content, self.CATEGORY_LABELS[location], function() return self:IsCharacterCategoryIncluded(characterKey, location) end, function(v)
-          self.db.settings.characterCategories[characterKey] = self.db.settings.characterCategories[characterKey] or {}
-          self.db.settings.characterCategories[characterKey][location] = v
-        end)
-        sourceCheck:SetPoint("TOPLEFT", 30, y); sourceCheck:SetChecked(self:IsCharacterCategoryIncluded(key, location)); y = y - 23
-        self.optionDynamic[#self.optionDynamic + 1] = sourceCheck
-      end
-    end
-    y = y - 8
-  end
-  if next(self.db.guilds) then
-    local guildHeader = Text(content, "LEFT", 12, true); guildHeader:SetPoint("TOPLEFT", 8, y - 4); guildHeader:SetText("Guild banks"); SetColor(function(...) guildHeader:SetTextColor(...) end, COLORS.indicator)
-    self.optionDynamic[#self.optionDynamic + 1] = guildHeader; y = y - 28
-    local guildKeys = {}
-    for key in pairs(self.db.guilds) do guildKeys[#guildKeys + 1] = key end
-    table.sort(guildKeys)
-    for _, key in ipairs(guildKeys) do
-      local guildKey = key
-      local guild = self.db.guilds[key]
-      local check = CreateCheckbox(content, key, function() return self:IsGuildIncluded(guildKey) end, function(v) self.db.settings.guilds[guildKey] = v end)
-      check:SetPoint("TOPLEFT", 6, y); check:SetChecked(self:IsGuildIncluded(key)); y = y - 21
-      self.optionDynamic[#self.optionDynamic + 1] = check
-      local memberNames = {}
-      for _, character in pairs(self.db.characters) do
-        if character.guildKey == guildKey then memberNames[#memberNames + 1] = character.name or "?" end
-      end
-      table.sort(memberNames)
-      local members = Text(content, "LEFT", 11); members:SetPoint("TOPLEFT", 30, y)
-      members:SetText(#memberNames > 0 and ("Characters: " .. table.concat(memberNames, ", ")) or "Characters: none recorded")
-      members:SetTextColor(0.58, 0.63, 0.61)
-      self.optionDynamic[#self.optionDynamic + 1] = members; y = y - 20
-      local goldCheck = CreateCheckbox(content, "Guild gold", function() return self:IsGuildGoldIncluded(guildKey) end, function(v) self.db.settings.guildGold[guildKey] = v end)
-      goldCheck:SetPoint("TOPLEFT", 30, y); goldCheck:SetChecked(self:IsGuildGoldIncluded(key)); y = y - 23
-      self.optionDynamic[#self.optionDynamic + 1] = goldCheck
-      local tabs = {}
-      for tab in pairs(guild.tabs or {}) do tabs[#tabs + 1] = tab end
-      table.sort(tabs)
-      for _, tab in ipairs(tabs) do
-        local tabIndex = tab
-        local tabLabel = (guild.tabNames and guild.tabNames[tab]) or ("Tab " .. tab)
-        local tabCheck = CreateCheckbox(content, tabIndex .. ": " .. tabLabel, function() return self:IsGuildTabIncluded(guildKey, tabIndex) end, function(v)
-          self.db.settings.guildTabs[guildKey] = self.db.settings.guildTabs[guildKey] or {}
-          self.db.settings.guildTabs[guildKey][tabIndex] = v
-        end)
-        tabCheck:SetPoint("TOPLEFT", 30, y); tabCheck:SetChecked(self:IsGuildTabIncluded(key, tab)); y = y - 23
-        self.optionDynamic[#self.optionDynamic + 1] = tabCheck
-      end
-      y = y - 8
+  local characterCount = Text(content, "LEFT", 11); characterCount:SetText(string.format("%d recorded", #characterKeys))
+  SetColor(function(...) characterCount:SetTextColor(...) end, COLORS_SUBTLE)
+  local characterCards = {}
+  for _, key in ipairs(characterKeys) do characterCards[#characterCards + 1] = self:BuildCharacterCard(content, key) end
+  self.sourceGroups[#self.sourceGroups + 1] = { label = characterLabel, count = characterCount, cards = characterCards }
+
+  local guildLabel = Text(content, "LEFT", 12, true); guildLabel:SetText("GUILD BANKS")
+  SetColor(function(...) guildLabel:SetTextColor(...) end, COLORS.indicator)
+  local guildKeys = {}
+  for key in pairs(self.db.guilds or {}) do guildKeys[#guildKeys + 1] = key end
+  table.sort(guildKeys)
+  local guildCount = Text(content, "LEFT", 11); guildCount:SetText(string.format("%d recorded", #guildKeys))
+  SetColor(function(...) guildCount:SetTextColor(...) end, COLORS_SUBTLE)
+  local guildCards = {}
+  for _, key in ipairs(guildKeys) do guildCards[#guildCards + 1] = self:BuildGuildCard(content, key) end
+  self.sourceGroups[#self.sourceGroups + 1] = { label = guildLabel, count = guildCount, cards = guildCards }
+
+  self:RelayoutSources()
+
+  local stale = self.GetStaleSources and self:GetStaleSources() or {}
+  if self.staleFooter then
+    if #stale == 0 then
+      self.staleFooter:SetText("All sources fresh")
+      SetColor(function(...) self.staleFooter:SetTextColor(...) end, COLORS_STALE.fresh)
+    else
+      self.staleFooter:SetText(string.format("%d source%s has stale data", #stale, #stale == 1 and "" or "s"))
+      SetColor(function(...) self.staleFooter:SetTextColor(...) end, COLORS.indicator)
     end
   end
-  content:SetHeight(math.max(1, -y + 8))
 end
 
 function SL:InitializeUI()
