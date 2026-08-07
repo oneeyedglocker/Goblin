@@ -431,6 +431,8 @@ end
 function SL:InitializeUI()
   local frame = CreateFrame("Frame", "GoblinFrame", UIParent, BackdropTemplateMixin and "BackdropTemplate" or nil)
   frame:SetSize(math.min(1200, math.max(790, self.db.window.width or 790)), math.min(900, math.max(450, self.db.window.height or 650))); frame:SetPoint("CENTER"); frame:SetMovable(true); frame:SetResizable(true); frame:EnableMouse(true); frame:EnableMouseWheel(true); frame:SetClampedToScreen(true)
+  frame:SetFrameStrata("HIGH")
+  frame:SetToplevel(true)
   frame:SetResizeBounds(790, 450, 1200, 900)
   frame:RegisterForDrag("LeftButton"); frame:SetScript("OnDragStart", frame.StartMoving); frame:SetScript("OnDragStop", frame.StopMovingOrSizing)
   Backdrop(frame, 1, COLORS.primaryAlt); frame:Hide(); self.frame = frame
@@ -522,7 +524,18 @@ function SL:RefreshUI(fromScroll)
   for index, widget in ipairs(self.rows) do
     local row = rows[index + offset]; widget.data = row
     if index <= (self.visibleRows or 25) and row then
-      widget:Show(); widget.columns.name:SetText((row.link and "|T" .. (select(10, GetItemInfo(row.link)) or 134400) .. ":16|t " or "") .. (row.link or row.name or row.itemString))
+      widget:Show()
+      local displayLink = row.link
+      if displayLink and displayLink:find("%[%]") then
+        local resolvedName = row.name or (row.itemID and GetItemInfo(row.itemID))
+        if resolvedName then
+          row.name = resolvedName
+          displayLink = displayLink:gsub("%[%]", "[" .. resolvedName .. "]", 1)
+        else
+          displayLink = row.name or row.itemString
+        end
+      end
+      widget.columns.name:SetText((row.link and "|T" .. (select(10, GetItemInfo(row.link)) or 134400) .. ":16|t " or "") .. (displayLink or row.name or row.itemString))
       for _, key in ipairs({ "total", "bags", "bank", "equipped", "mail", "auctions", "guild" }) do widget.columns[key]:SetText((row[key] or 0) > 0 and row[key] or "") end
       widget.columns.value:SetText(self:FormatMoney(row.value))
     else widget:Hide() end
