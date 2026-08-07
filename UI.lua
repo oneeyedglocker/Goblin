@@ -744,10 +744,15 @@ end
 
 function SL:RefreshUI(fromScroll)
   if not self.frame or not self.frame:IsShown() then return end
+  -- Compute visible row count from the current frame height every refresh
+  -- so rows never render past the panel bottom, no matter how the frame
+  -- was sized on init or by SavedVariables. 131 = title(30)+search(38)+
+  -- header(24)+footer(38)+padding.
+  self.visibleRows = math.max(1, math.min(MAX_VISIBLE_ROWS, math.floor((self.frame:GetHeight() - 131) / ROW_HEIGHT)))
   for key, header in pairs(self.headers or {}) do header.indicator:SetShown(key == self.db.settings.sort) end
   local rows, itemValue, gold = self:BuildLedger(self.search and self.search:GetText())
   self.ledgerRows = rows
-  local maximum = math.max(0, #rows - (self.visibleRows or 25))
+  local maximum = math.max(0, #rows - self.visibleRows)
   self.scroll:SetMinMaxValues(0, maximum)
   if not fromScroll and self.scroll:GetValue() > maximum then self.scroll:SetValue(maximum) end
   local offset = math.floor(self.scroll:GetValue() + 0.5)
