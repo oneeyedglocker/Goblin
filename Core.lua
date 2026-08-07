@@ -577,6 +577,25 @@ SlashCmdList.GOBLIN = function(msg)
       end
     end
   elseif head == "trace" or head == "find" then SL:TraceItem(tail)
+  elseif head == "net" or head == "worth" then
+    local _, itemValue, gold = SL:BuildLedger("")
+    local itemCount = 0
+    for _, character in pairs(SL.db.characters or {}) do
+      for _, items in pairs(character.locations or {}) do
+        for _, item in pairs(items) do
+          if (item.count or 0) > 0 then itemCount = itemCount + (item.count or 0) end
+        end
+      end
+    end
+    for _, guild in pairs(SL.db.guilds or {}) do
+      for _, tab in pairs(guild.tabs or {}) do
+        for _, item in pairs(tab) do
+          if (item.count or 0) > 0 then itemCount = itemCount + (item.count or 0) end
+        end
+      end
+    end
+    print(string.format("|cffffd839Goblin net worth:|r %s  (items %s + gold %s, %d item(s) counted)",
+      SL:FormatMoney(itemValue + gold), SL:FormatMoney(itemValue), SL:FormatMoney(gold), itemCount))
   elseif head == "coverage" or head == "check" then SL:PrintCoverageReport(strlower(tail or ""))
   elseif head == "diff" or head == "tsm" then
     local a, b = tail:match("^(%S*)%s*(%S*)$")
@@ -589,6 +608,7 @@ SlashCmdList.GOBLIN = function(msg)
   elseif head == "help" or head == "?" then
     print("|cffffd839Goblin commands:|r")
     print("  /goblin — toggle the ledger")
+    print("  /goblin net — print current net worth")
     print("  /goblin mail — list in-flight mail shipments")
     print("  /goblin stale — list unscanned/stale sources")
     print("  /goblin trace <name> — show every source Goblin has for an item")
