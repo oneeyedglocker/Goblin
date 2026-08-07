@@ -94,25 +94,42 @@ function SL:ScanAuctions()
   self:CommitCharacterLocation("auctions", items)
 end
 
+local function ScanSingleGuildTab(guild, tab)
+  guild.tabNames = guild.tabNames or {}
+  local tabName = GetGuildBankTabInfo and GetGuildBankTabInfo(tab)
+  guild.tabNames[tab] = tabName or ("Tab " .. tab)
+  local tabItems = NewItemTable()
+  local slotCount = MAX_GUILDBANK_SLOTS_PER_TAB or 98
+  local seenAny = false
+  for slot = 1, slotCount do
+    local link = GetGuildBankItemLink(tab, slot)
+    local _, count = GetGuildBankItemInfo(tab, slot)
+    if link then seenAny = true end
+    AddItem(tabItems, link, count)
+  end
+  -- Only overwrite a previously-known tab when we actually saw contents
+  -- (rank-restricted tabs return empty until QueryGuildBankTab succeeds).
+  if seenAny or not guild.tabs[tab] then
+    guild.tabs[tab] = tabItems
+    guild.tabUpdated = guild.tabUpdated or {}
+    guild.tabUpdated[tab] = time()
+    return true
+  end
+  return false
+end
+
 function SL:ScanGuildBank()
   local guildKey = self:GetGuildKey()
   if not guildKey then return end
   local guild = self.db.guilds[guildKey] or { name = GetGuildInfo("player"), realm = GetRealmName(), tabs = {}, tabNames = {} }
   self.db.guilds[guildKey] = guild
+  guild.tabs = guild.tabs or {}
   if self.db.settings.guilds[guildKey] == nil then self.db.settings.guilds[guildKey] = true end
-  local tab = GetCurrentGuildBankTab and GetCurrentGuildBankTab() or 1
-  guild.tabNames = guild.tabNames or {}
-  local tabName = GetGuildBankTabInfo and GetGuildBankTabInfo(tab)
-  guild.tabNames[tab] = tabName or ("Tab " .. tab)
-  local tabItems = NewItemTable()
-  for slot = 1, MAX_GUILDBANK_SLOTS_PER_TAB or 98 do
-    local link = GetGuildBankItemLink(tab, slot)
-    local _, count = GetGuildBankItemInfo(tab, slot)
-    AddItem(tabItems, link, count)
+  local tabCount = GetNumGuildBankTabs and GetNumGuildBankTabs() or 1
+  local changed = false
+  for tab = 1, tabCount do
+    if ScanSingleGuildTab(guild, tab) then changed = true end
   end
-  guild.tabs[tab] = tabItems
-  guild.tabUpdated = guild.tabUpdated or {}
-  guild.tabUpdated[tab] = time()
   guild.items = NewItemTable()
   for _, savedTab in pairs(guild.tabs) do
     for _, item in pairs(savedTab) do AddItem(guild.items, item.link, item.count) end
@@ -120,7 +137,7 @@ function SL:ScanGuildBank()
   guild.gold = GetGuildBankMoney and GetGuildBankMoney() or guild.gold
   guild.goldUpdated = time()
   guild.updated = time()
-  if self.RefreshUI then self:RefreshUI() end
+  if changed and self.RefreshUI then self:RefreshUI() end
 end
 
 function SL:UpdateMoney()
@@ -128,6 +145,29 @@ function SL:UpdateMoney()
   character.gold = GetMoney()
   character.moneyUpdated = time()
   if self.RefreshUI then self:RefreshUI() end
+end
+
+-- Ask the server for every viewable tab so users don't have to click each
+-- tab manually. QueryGuildBankTab does not spend withdrawal charges; tabs
+-- the current rank can't view silently no-op. Staggered by frame to avoid
+-- flooding the client on guild banks with many tabs.
+function SL:RequestAllGuildBankTabs()
+  if not QueryGuildBankTab then return end
+  local tabCount = GetNumGuildBankTabs and GetNumGuildBankTabs() or 0
+  if tabCount == 0 then return end
+  local pending = {}
+  for tab = 1, tabCount do pending[#pending + 1] = tab end
+  local ticker = CreateFrame("Frame")
+  local index = 0
+  ticker:SetScript("OnUpdate", function(self, elapsed)
+    self.acc = (self.acc or 0) + elapsed
+    if self.acc < 0.1 then return end
+    self.acc = 0
+    index = index + 1
+    local nextTab = pending[index]
+    if not nextTab then self:SetScript("OnUpdate", nil); return end
+    pcall(QueryGuildBankTab, nextTab)
+  end)
 end
 
 function SL:InitializeScanner()
@@ -144,7 +184,8 @@ function SL:InitializeScanner()
     elseif event == "BANKFRAME_OPENED" then self:ScanBank()
     elseif event == "MAIL_SHOW" or event == "MAIL_INBOX_UPDATE" then self:ScanMail()
     elseif event == "AUCTION_HOUSE_SHOW" or event == "AUCTION_OWNED_LIST_UPDATE" then self:ScanAuctions()
-    elseif event == "GUILDBANKFRAME_OPENED" or event == "GUILDBANKBAGSLOTS_CHANGED" then self:ScanGuildBank()
+    elseif event == "GUILDBANKFRAME_OPENED" then self:ScanGuildBank(); self:RequestAllGuildBankTabs()
+    elseif event == "GUILDBANKBAGSLOTS_CHANGED" then self:ScanGuildBank()
     elseif event == "PLAYER_GUILD_UPDATE" then self:GetCharacter(); if self.RefreshUI then self:RefreshUI() end end
   end)
 end

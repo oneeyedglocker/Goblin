@@ -10,3 +10,5 @@ Core.lua
 Scanner.lua
 Ledger.lua
 UI.lua
+History.lua
+Minimap.lua

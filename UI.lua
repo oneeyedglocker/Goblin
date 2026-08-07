@@ -441,6 +441,7 @@ function SL:InitializeUI()
   SetColor(function(...) section:SetTextColor(...) end, COLORS.indicator)
   local close = Button(titleBar, "×", 24, function() frame:Hide() end); close:SetPoint("RIGHT", -3, 0)
   local options = Button(titleBar, "Sources", 70, function() self.options:SetShown(not self.options:IsShown()); self:RefreshOptions() end); options:SetPoint("RIGHT", close, "LEFT", -6, 0)
+  local history = Button(titleBar, "History", 66, function() self:ToggleHistory() end); history:SetPoint("RIGHT", options, "LEFT", -6, 0)
   local search = Input(frame, 270, 22); search:SetPoint("TOPLEFT", 10, -38)
   search:SetScript("OnTextChanged", function() self:RefreshUI() end); self.search = search
   local hint = Text(search, "LEFT"); hint:SetPoint("LEFT", 6, 0); hint:SetText("Filter by keyword"); hint:SetTextColor(0.5, 0.54, 0.58)
@@ -528,6 +529,8 @@ function SL:RefreshUI(fromScroll)
   end
   self.summary:SetText(string.format("Items: %s   Gold: %s   |cffffd839Net worth: %s|r", self:FormatMoney(itemValue), self:FormatMoney(gold), self:FormatMoney(itemValue + gold)))
   self:RefreshOptions()
+  if self.MaybeSnapshot then self:MaybeSnapshot(itemValue, gold) end
+  if self.RefreshHistoryPanel then self:RefreshHistoryPanel() end
 end
 
 function SL:ToggleUI()

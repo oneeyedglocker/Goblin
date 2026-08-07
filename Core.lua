@@ -34,6 +34,7 @@ local DEFAULTS = {
   characters = {},
   guilds = {},
   mailTransit = {},
+  history = {},
   window = {},
 }
 
@@ -316,6 +317,7 @@ events:SetScript("OnEvent", function(_, event, name)
     if not uiOK then
       print("|cffff5555Goblin UI error:|r " .. tostring(uiError))
     end
+    if SL.CreateMinimapButton then pcall(function() SL:CreateMinimapButton() end) end
     SL:ScanBags()
     SL:ScanEquipped()
     SL:UpdateMoney()
