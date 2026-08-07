@@ -325,4 +325,18 @@ end)
 SLASH_GOBLIN1 = "/goblin"
 SLASH_GOBLIN2 = "/sl"
 SLASH_GOBLIN3 = "/ledger"
-SlashCmdList.GOBLIN = function() SL:ToggleUI() end
+SlashCmdList.GOBLIN = function(msg)
+  msg = strlower(strtrim(msg or ""))
+  if msg == "mail" or msg == "transit" then SL:PrintMailTransitSummary()
+  elseif msg == "stale" or msg == "diag" then
+    local stale = SL:GetStaleSources()
+    print("|cffffd839Goblin unscanned/stale sources:|r " .. #stale)
+    for _, entry in ipairs(stale) do
+      if entry.kind == "character" then
+        print(string.format("  |cffababab%s|r %s — %s", entry.name or entry.key, entry.location, entry.label or entry.status))
+      else
+        print(string.format("  |cff8fb6f0<%s>|r tab %s — %s", entry.guildName or entry.key, tostring(entry.location), entry.label or entry.status))
+      end
+    end
+  else SL:ToggleUI() end
+end

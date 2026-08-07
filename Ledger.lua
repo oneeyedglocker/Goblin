@@ -151,12 +151,10 @@ function SL:StageReturnedMail(inboxIndex)
   if self.RefreshUI then self:RefreshUI() end
 end
 
-local function ReconcileAgainstInbox(self, currentKey)
-  local transit = self.db.mailTransit
-  if not transit then return end
-  local visible = {}
+local function BuildVisibleMap(self)
+  local visible, oldestDaysLeft = {}, nil
   for index = 1, GetInboxNumItems() do
-    local sender = GetInboxHeaderInfo and GetInboxHeaderInfo(index)
+    local sender, _, _, _, _, daysLeft = GetInboxHeaderInfo and GetInboxHeaderInfo(index)
     if sender then
       visible[sender] = visible[sender] or {}
       for slot = 1, (ATTACHMENTS_MAX_RECEIVE or 16) do
@@ -165,43 +163,63 @@ local function ReconcileAgainstInbox(self, currentKey)
         if link and quantity and quantity > 0 then
           local itemString = self:NormalizeItem(link)
           if itemString then
-            local senderBucket = visible[sender]
-            senderBucket[itemString] = (senderBucket[itemString] or 0) + quantity
+            visible[sender][itemString] = (visible[sender][itemString] or 0) + quantity
           end
         end
       end
     end
-  end
-  local now = NowSeconds()
-  local mailCapReached = GetInboxNumItems() >= 50
-  for id, record in pairs(transit) do
-    if record.status == "pending" and record.recipientKey == currentKey then
-      local age = now - (record.sentAt or now)
-      if age < RECIPIENT_WINDOW then
-        local senderBucket = visible[record.senderName or ""]
-        local matches = false
-        if senderBucket then
-          matches = true
-          for itemString, item in pairs(record.items or {}) do
-            if (senderBucket[itemString] or 0) < item.count then matches = false; break end
-          end
-        end
-        -- If we can see a matching mail from the sender OR the inbox is
-        -- authoritative (not at the visible cap), consider the shipment
-        -- reconciled: either it's still sitting there and the inbox scan
-        -- already counts it, or the recipient already took it into bags.
-        if matches or not mailCapReached then
-          record.status = "delivered"
-          record.deliveredAt = now
-        end
-      end
+    if daysLeft and (not oldestDaysLeft or daysLeft < oldestDaysLeft) then
+      oldestDaysLeft = daysLeft
     end
   end
+  return visible, oldestDaysLeft
+end
+
+local function MatchesBucket(record, bucket)
+  if not bucket then return false end
+  for itemString, item in pairs(record.items or {}) do
+    if (bucket[itemString] or 0) < item.count then return false end
+  end
+  return next(record.items) ~= nil
 end
 
 function SL:ReconcileMailTransit()
-  local _, key = self:GetCharacter()
-  ReconcileAgainstInbox(self, key)
+  local _, currentKey = self:GetCharacter()
+  local transit = self.db.mailTransit
+  if not transit then return end
+  local visible, oldestDaysLeft = BuildVisibleMap(self)
+  local now = NowSeconds()
+  local capReached = GetInboxNumItems() >= 50
+  for id, record in pairs(transit) do
+    if record.status == "pending" then
+      local age = now - (record.sentAt or now)
+      -- Outbound leg: the recipient is looking at their own inbox.
+      if record.recipientKey == currentKey and age < RECIPIENT_WINDOW then
+        local matches = MatchesBucket(record, visible[record.senderName or ""])
+        if matches or not capReached then
+          record.status = "delivered"; record.deliveredAt = now
+        end
+      end
+      -- Return leg: the shipment has come back and the ORIGINAL sender is
+      -- now the effective recipient. Match against inbox sender=recipientName.
+      if record.senderKey == currentKey and age >= RECIPIENT_WINDOW and age < RETURN_WINDOW then
+        local matches = MatchesBucket(record, visible[record.recipientName or ""])
+        if matches or not capReached then
+          record.status = "reclaimed"; record.deliveredAt = now
+        end
+      end
+      -- Explicit-return leg: if the current char is either party and the
+      -- record is very fresh (a manual ReturnInboxItem re-shipment), also
+      -- try to reconcile so the return record can't linger past its natural
+      -- lifetime after both parties have processed it.
+      if record.returned and (record.senderKey == currentKey or record.recipientKey == currentKey) then
+        local matches = MatchesBucket(record, visible[record.senderName or ""])
+        if matches then record.status = "delivered"; record.deliveredAt = now end
+      end
+    end
+  end
+  local character = self.db.characters[currentKey]
+  if character then character.mailOldestDaysLeft = oldestDaysLeft end
 end
 
 function SL:PruneMailTransit()
@@ -250,6 +268,50 @@ function SL:CollectMailTransit()
     end
   end
   return perCharacter, transitGold
+end
+
+function SL:GetMailTransitSummary()
+  local transit = self.db.mailTransit or {}
+  local now = NowSeconds()
+  local rows = {}
+  for _, record in pairs(transit) do
+    if record.status == "pending" then
+      local age = now - (record.sentAt or now)
+      local phase, attributedTo
+      if age < RECIPIENT_WINDOW then
+        phase = string.format("in transit (%dd of 30 to recipient)", math.floor(age / DAY_SECONDS))
+        attributedTo = record.recipientName or "?"
+      elseif age < RETURN_WINDOW then
+        phase = string.format("returning (%dd of 30 back to sender)", math.floor((age - RECIPIENT_WINDOW) / DAY_SECONDS))
+        attributedTo = record.senderName or "?"
+      else
+        phase = "expiring"
+        attributedTo = "—"
+      end
+      rows[#rows + 1] = {
+        sender = record.senderName, recipient = record.recipientName,
+        attributedTo = attributedTo, phase = phase, ageDays = math.floor(age / DAY_SECONDS),
+        money = record.money or 0, items = record.items or {},
+      }
+    end
+  end
+  table.sort(rows, function(a, b) return a.ageDays > b.ageDays end)
+  return rows
+end
+
+function SL:PrintMailTransitSummary()
+  local rows = self:GetMailTransitSummary()
+  print("|cffffd839Goblin mail in transit:|r " .. #rows .. " shipment(s)")
+  for _, row in ipairs(rows) do
+    local itemPreview, count = "", 0
+    for _, item in pairs(row.items) do
+      count = count + 1
+      if count <= 3 then itemPreview = itemPreview .. " " .. (item.link or item.name or item.itemString) .. "x" .. item.count end
+    end
+    if count > 3 then itemPreview = itemPreview .. string.format(" +%d more", count - 3) end
+    print(string.format("  |cffababab%s → %s|r  %s → |cffffd839%s|r%s",
+      row.sender or "?", row.recipient or "?", row.phase, row.attributedTo, itemPreview))
+  end
 end
 
 function SL:InitializeMailLedger()
