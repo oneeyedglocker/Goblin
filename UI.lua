@@ -178,21 +178,67 @@ local function CreateCard(parent)
   return card
 end
 
--- Sources panel: dark-card layout matching the goblin-sources-panel mockup.
--- One card per character (pills for gold + each location) and one per guild
--- (master switch + guild-gold pill + one pill per known tab). All cards share
--- the same collapsible frame so users can hide seldom-touched alts.
+-- Sources panel: matrix layout (characters × sources) with preset chips
+-- above and guild cards below. Row headers and column headers carry compact
+-- all/none/flip links so bulk edits are one click. Preset chips at the top
+-- cover common shapes ("everything", "current only", "no equipped", etc.).
 
+local MATRIX_PANEL_W = 680
+local MATRIX_ROW_HEADER_W = 240
+local MATRIX_CELL_H = 32
+local MATRIX_HEADER_H = 40
+local MATRIX_SOURCES = {
+  { key = "gold", label = "Gold" },
+  { key = "bags", label = "Bags" },
+  { key = "bank", label = "Bank" },
+  { key = "equipped", label = "Equip" },
+  { key = "mail", label = "Mail" },
+  { key = "auctions", label = "AH" },
+}
 local CARD_PADDING_X = 12
 local CARD_BODY_ROW_H = 24
 local CARD_BODY_TOP = 6
 local CARD_BODY_BOTTOM = 8
 local CARDS_GAP = 8
 
+-- Tiny text-button used for the all/none/flip bulk links.
+local function TextLink(parent, text, onClick, color)
+  local b = CreateFrame("Button", nil, parent)
+  b:SetHeight(12)
+  local t = b:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+  t:SetPoint("CENTER"); t:SetText(text)
+  local c = color or COLORS_SUBTLE
+  t:SetTextColor(c[1], c[2], c[3])
+  b:SetWidth(math.max(16, t:GetStringWidth() + 4))
+  b:SetScript("OnEnter", function() t:SetTextColor(1, 0.85, 0.22) end)
+  b:SetScript("OnLeave", function() t:SetTextColor(c[1], c[2], c[3]) end)
+  b:SetScript("OnClick", onClick)
+  b.text = t
+  return b
+end
+
+-- Cell = a small checkbox centered in a hover-highlighted rectangle. Same
+-- visual language as the pill checkboxes we had, just without a label since
+-- the column header carries the label.
+local function MatrixCell(parent, get, set)
+  local cell = CreateFrame("Button", nil, parent, BackdropTemplateMixin and "BackdropTemplate" or nil)
+  local hl = cell:CreateTexture(nil, "HIGHLIGHT"); hl:SetAllPoints()
+  SetColor(function(...) hl:SetColorTexture(...) end, COLORS.activeAlt, 0.06)
+  local box = CreateFrame("Frame", nil, cell, BackdropTemplateMixin and "BackdropTemplate" or nil)
+  box:SetSize(13, 13); box:SetPoint("CENTER"); Backdrop(box, 1, COLORS.primaryAlt, COLORS.active)
+  box.fill = box:CreateTexture(nil, "ARTWORK"); box.fill:SetPoint("TOPLEFT", 2, -2); box.fill:SetPoint("BOTTOMRIGHT", -2, 2)
+  SetColor(function(...) box.fill:SetColorTexture(...) end, COLORS.indicator)
+  cell.Update = function() box.fill:SetShown(get() and true or false) end
+  cell:SetScript("OnClick", function() set(not get() and true or false); cell.Update(); SL:RefreshUI() end)
+  cell:SetScript("OnShow", cell.Update); cell.Update()
+  return cell
+end
+
 function SL:CreateOptions()
   local frame = CreateFrame("Frame", nil, self.frame, BackdropTemplateMixin and "BackdropTemplate" or nil)
   frame:SetPoint("TOPRIGHT", self.frame, "TOPRIGHT", -8, -40)
-  frame:SetSize(560, 620); frame:SetFrameLevel(self.frame:GetFrameLevel() + 20); Backdrop(frame, 1, COLORS.primary, COLORS.frame); frame:Hide()
+  frame:SetSize(MATRIX_PANEL_W, 640); frame:SetFrameLevel(self.frame:GetFrameLevel() + 20); Backdrop(frame, 1, COLORS.primary, COLORS.frame); frame:Hide()
+  frame:SetFrameStrata("HIGH"); frame:SetToplevel(true)
   self.options = frame
 
   local titleBar = CreateFrame("Frame", nil, frame, BackdropTemplateMixin and "BackdropTemplate" or nil)
@@ -204,19 +250,39 @@ function SL:CreateOptions()
   local close = Button(titleBar, "×", 26, function() frame:Hide() end); close:SetPoint("RIGHT", -6, 0)
 
   local intro = CreateFrame("Frame", nil, frame, BackdropTemplateMixin and "BackdropTemplate" or nil)
-  intro:SetPoint("TOPLEFT", 1, -37); intro:SetPoint("TOPRIGHT", -1, -37); intro:SetHeight(48); Backdrop(intro, 1, COLORS.primary, COLORS.primary)
-  local heading = Text(intro, "LEFT", 13, true); heading:SetPoint("TOPLEFT", 12, -8); heading:SetText("Included in net worth")
+  intro:SetPoint("TOPLEFT", 1, -37); intro:SetPoint("TOPRIGHT", -1, -37); intro:SetHeight(44); Backdrop(intro, 1, COLORS.primary, COLORS.primary)
+  local heading = Text(intro, "LEFT", 13, true); heading:SetPoint("TOPLEFT", 12, -6); heading:SetText("Included in net worth")
   SetColor(function(...) heading:SetTextColor(...) end, COLORS.text)
-  local desc = Text(intro, "LEFT", 11); desc:SetPoint("TOPLEFT", 12, -26); desc:SetText("Choose the characters, locations, and guild banks Goblin should count.")
+  local desc = Text(intro, "LEFT", 11); desc:SetPoint("TOPLEFT", 12, -24); desc:SetText("Rows are characters, columns are sources. Click a column or row label to bulk-toggle.")
   SetColor(function(...) desc:SetTextColor(...) end, COLORS_SUBTLE)
-  local enableAll = Button(intro, "Enable all", 72, function() self:BulkSetSources(true) end); enableAll:SetPoint("TOPRIGHT", -90, -12)
+  local enableAll = Button(intro, "Enable all", 72, function() self:BulkSetSources(true) end); enableAll:SetPoint("TOPRIGHT", -90, -10)
   Backdrop(enableAll, 0, COLORS.primary, COLORS.primary); SetColor(function(...) enableAll.label:SetTextColor(...) end, COLORS.indicator)
-  local disableAll = Button(intro, "Disable all", 76, function() self:BulkSetSources(false) end); disableAll:SetPoint("TOPRIGHT", -10, -12)
+  local disableAll = Button(intro, "Disable all", 76, function() self:BulkSetSources(false) end); disableAll:SetPoint("TOPRIGHT", -10, -10)
   Backdrop(disableAll, 0, COLORS.primary, COLORS.primary); SetColor(function(...) disableAll.label:SetTextColor(...) end, COLORS_SUBTLE)
 
+  local presets = CreateFrame("Frame", nil, frame, BackdropTemplateMixin and "BackdropTemplate" or nil)
+  presets:SetPoint("TOPLEFT", 1, -81); presets:SetPoint("TOPRIGHT", -1, -81); presets:SetHeight(32); Backdrop(presets, 1, COLORS.primaryAlt, COLORS.primaryAlt)
+  local presetLabel = Text(presets, "LEFT", 10, true); presetLabel:SetPoint("LEFT", 12, 0); presetLabel:SetText("PRESET")
+  SetColor(function(...) presetLabel:SetTextColor(...) end, COLORS_SUBTLE)
+  local anchor = presetLabel
+  local presetDefs = {
+    { label = "Everything", fn = function() self:PresetEverything() end },
+    { label = "Current only", fn = function() self:PresetCurrentOnly() end },
+    { label = "No equipped", fn = function() self:PresetNoEquipped() end },
+    { label = "Storage", fn = function() self:PresetStorage() end },
+    { label = "Nothing", fn = function() self:BulkSetSources(false) end },
+  }
+  for _, def in ipairs(presetDefs) do
+    local chip = Button(presets, def.label, math.max(58, def.label:len() * 7 + 12), def.fn)
+    chip:SetHeight(18); chip:SetPoint("LEFT", anchor, "RIGHT", 8, 0)
+    Backdrop(chip, 1, COLORS.primary, COLORS.active)
+    SetColor(function(...) chip.label:SetTextColor(...) end, COLORS.textAlt)
+    anchor = chip
+  end
+
   local scroll = CreateFrame("ScrollFrame", nil, frame, "UIPanelScrollFrameTemplate")
-  scroll:SetPoint("TOPLEFT", 4, -88); scroll:SetPoint("BOTTOMRIGHT", -28, 34)
-  local content = CreateFrame("Frame", nil, scroll); content:SetSize(524, 1); scroll:SetScrollChild(content)
+  scroll:SetPoint("TOPLEFT", 4, -116); scroll:SetPoint("BOTTOMRIGHT", -28, 34)
+  local content = CreateFrame("Frame", nil, scroll); content:SetSize(MATRIX_PANEL_W - 36, 1); scroll:SetScrollChild(content)
   self.optionsScroll, self.optionsContent = scroll, content
 
   local footer = CreateFrame("Frame", nil, frame, BackdropTemplateMixin and "BackdropTemplate" or nil)
@@ -225,6 +291,48 @@ function SL:CreateOptions()
   SetColor(function(...) footerHint:SetTextColor(...) end, COLORS_SUBTLE)
   local staleText = Text(footer, "RIGHT", 11, true); staleText:SetPoint("RIGHT", -12, 0); self.staleFooter = staleText
   return frame
+end
+
+-- ============================================================================
+-- Presets
+-- ============================================================================
+
+local function ForEachCharacterSource(self, fn)
+  for key in pairs(self.db.characters or {}) do
+    self.db.settings.characterCategories[key] = self.db.settings.characterCategories[key] or {}
+    for _, def in ipairs(MATRIX_SOURCES) do fn(key, def.key) end
+  end
+end
+
+function SL:PresetEverything() self:BulkSetSources(true) end
+function SL:PresetCurrentOnly()
+  local _, currentKey = self:GetCharacter()
+  for key in pairs(self.db.characters or {}) do
+    local match = key == currentKey
+    self.db.settings.characters[key] = match
+    self.db.settings.characterGold[key] = match
+    self.db.settings.characterCategories[key] = self.db.settings.characterCategories[key] or {}
+    for _, def in ipairs(MATRIX_SOURCES) do
+      if def.key ~= "gold" then self.db.settings.characterCategories[key][def.key] = match end
+    end
+  end
+  self:RefreshUI()
+end
+function SL:PresetNoEquipped()
+  self:BulkSetSources(true)
+  for key in pairs(self.db.characters or {}) do
+    self.db.settings.characterCategories[key] = self.db.settings.characterCategories[key] or {}
+    self.db.settings.characterCategories[key].equipped = false
+  end
+  self:RefreshUI()
+end
+function SL:PresetStorage()
+  self:BulkSetSources(true)
+  for key in pairs(self.db.characters or {}) do
+    self.db.settings.characterCategories[key] = self.db.settings.characterCategories[key] or {}
+    self.db.settings.characterCategories[key].equipped = false
+  end
+  self:RefreshUI()
 end
 
 -- Bulk enable/disable used by the Enable all / Disable all header buttons.
@@ -253,62 +361,121 @@ local function FormatClass(class)
   return pretty
 end
 
-function SL:BuildCharacterCard(parent, characterKey)
-  local character = self.db.characters[characterKey]
-  local card = CreateCard(parent)
-  local nameStr = Text(card.header, "LEFT", 13, true); nameStr:SetPoint("LEFT", 28, 0)
-  nameStr:SetText(character.name or "?"); SetColor(function(...) nameStr:SetTextColor(...) end, COLORS.text)
-  local realm = Text(card.header, "LEFT", 13, true); realm:SetPoint("LEFT", nameStr, "RIGHT", 8, 0)
-  realm:SetText("— " .. (character.realm or "?")); SetColor(function(...) realm:SetTextColor(...) end, COLORS.indicator)
-  local meta = Text(card.header, "LEFT", 11); meta:SetPoint("LEFT", realm, "RIGHT", 8, 0); meta:SetPoint("RIGHT", -140, 0)
-  local class = FormatClass(character.class)
-  if character.guildName then
-    meta:SetText(string.format("|cff8fb6f0<%s>|r  |cffababab· %s|r", character.guildName, class or ""))
-  else
-    meta:SetText(string.format("|cff787878No guild|r  |cffababab· %s|r", class or ""))
+-- Character-source get/set closures used by cells, row-bulk links and presets.
+local function CharGet(self, key, source)
+  if source == "gold" then return self:IsCharacterGoldIncluded(key) end
+  return self:IsCharacterCategoryIncluded(key, source)
+end
+local function CharSet(self, key, source, v)
+  if source == "gold" then self.db.settings.characterGold[key] = v; return end
+  self.db.settings.characterCategories[key] = self.db.settings.characterCategories[key] or {}
+  self.db.settings.characterCategories[key][source] = v
+end
+local function ApplyColumnBulk(self, characterKeys, source, op)
+  for _, key in ipairs(characterKeys) do
+    local current = CharGet(self, key, source)
+    if op == "all" then CharSet(self, key, source, true)
+    elseif op == "none" then CharSet(self, key, source, false)
+    elseif op == "flip" then CharSet(self, key, source, not current) end
   end
-  local badge = FreshnessBadge(card.header); badge:SetPoint("RIGHT", -12, 0)
-  local locations = { "bags", "bank", "equipped", "mail", "auctions" }
-  local newestStamp, newestStatus
-  for _, loc in ipairs(locations) do
-    local info = self:GetLocationFreshness(characterKey, loc)
-    if info.stamp and (not newestStamp or info.stamp > newestStamp) then newestStamp, newestStatus = info.stamp, info.status end
+  self:RefreshUI()
+end
+local function ApplyRowBulk(self, key, op)
+  for _, def in ipairs(MATRIX_SOURCES) do
+    local current = CharGet(self, key, def.key)
+    if op == "all" then CharSet(self, key, def.key, true)
+    elseif op == "none" then CharSet(self, key, def.key, false)
+    elseif op == "flip" then CharSet(self, key, def.key, not current) end
   end
-  local goldInfo = self:GetLocationFreshness(characterKey, "gold")
-  if goldInfo.stamp and (not newestStamp or goldInfo.stamp > newestStamp) then newestStamp, newestStatus = goldInfo.stamp, goldInfo.status end
-  badge.Set(newestStamp and newestStatus or "never", newestStamp and self:FormatAge(time() - newestStamp) or nil)
+  self:RefreshUI()
+end
 
-  local pillWidth = math.floor((512 - CARD_PADDING_X * 2 - 8) / 3)
-  local pills = {
-    { key = "gold", label = "Gold" },
-    { key = "bags", label = "Bags" },
-    { key = "bank", label = "Bank" },
-    { key = "equipped", label = "Equipped" },
-    { key = "mail", label = "Mail" },
-    { key = "auctions", label = "Auctions" },
-  }
-  for index, pillDef in ipairs(pills) do
-    local col = ((index - 1) % 3)
-    local row = math.floor((index - 1) / 3)
-    local get, set
-    if pillDef.key == "gold" then
-      get = function() return self:IsCharacterGoldIncluded(characterKey) end
-      set = function(v) self.db.settings.characterGold[characterKey] = v end
-    else
-      local loc = pillDef.key
-      get = function() return self:IsCharacterCategoryIncluded(characterKey, loc) end
-      set = function(v)
-        self.db.settings.characterCategories[characterKey] = self.db.settings.characterCategories[characterKey] or {}
-        self.db.settings.characterCategories[characterKey][loc] = v
-      end
-    end
-    local pill = PillCheckbox(card.body, pillDef.label, get, set, pillWidth)
-    pill:SetPoint("TOPLEFT", CARD_PADDING_X + col * (pillWidth + 4), -(CARD_BODY_TOP + row * (CARD_BODY_ROW_H)))
+function SL:BuildCharacterMatrix(parent, characterKeys)
+  local matrix = CreateFrame("Frame", nil, parent)
+  matrix:SetPoint("TOPLEFT"); matrix:SetPoint("TOPRIGHT")
+  local width = parent:GetWidth()
+  local cellW = math.floor((width - MATRIX_ROW_HEADER_W - 4) / #MATRIX_SOURCES)
+
+  -- Column header row (label + all/none/flip links)
+  local headerRow = CreateFrame("Frame", nil, matrix, BackdropTemplateMixin and "BackdropTemplate" or nil)
+  headerRow:SetPoint("TOPLEFT"); headerRow:SetPoint("TOPRIGHT"); headerRow:SetHeight(MATRIX_HEADER_H)
+  Backdrop(headerRow, 1, COLORS.frame, COLORS.frame)
+  local corner = Text(headerRow, "LEFT", 10, true); corner:SetPoint("TOPLEFT", 12, -4); corner:SetText("CHARACTER")
+  SetColor(function(...) corner:SetTextColor(...) end, COLORS.indicator)
+  local sub = Text(headerRow, "LEFT", 10); sub:SetPoint("TOPLEFT", 12, -20); sub:SetText("rows: click name → bulk")
+  SetColor(function(...) sub:SetTextColor(...) end, COLORS_SUBTLE)
+  for i, def in ipairs(MATRIX_SOURCES) do
+    local x = MATRIX_ROW_HEADER_W + (i - 1) * cellW
+    local label = Text(headerRow, "CENTER", 12, true); label:SetPoint("TOP", headerRow, "TOPLEFT", x + cellW / 2, -4); label:SetText(def.label)
+    SetColor(function(...) label:SetTextColor(...) end, COLORS.text)
+    local source = def.key
+    local linkAll = TextLink(headerRow, "all",  function() ApplyColumnBulk(self, characterKeys, source, "all") end)
+    local linkNone = TextLink(headerRow, "none", function() ApplyColumnBulk(self, characterKeys, source, "none") end)
+    local linkFlip = TextLink(headerRow, "flip", function() ApplyColumnBulk(self, characterKeys, source, "flip") end)
+    linkAll:SetPoint("TOP", headerRow, "TOPLEFT", x + cellW / 2 - 32, -22)
+    linkNone:SetPoint("LEFT", linkAll, "RIGHT", 4, 0)
+    linkFlip:SetPoint("LEFT", linkNone, "RIGHT", 4, 0)
   end
-  card.bodyHeight = CARD_BODY_TOP + CARD_BODY_ROW_H * 2 + CARD_BODY_BOTTOM
-  card.body:SetHeight(card.bodyHeight)
-  card:SetHeight(36 + card.bodyHeight)
-  return card
+
+  -- One row per character
+  matrix.rows = {}
+  for rowIndex, key in ipairs(characterKeys) do
+    local character = self.db.characters[key]
+    local row = CreateFrame("Frame", nil, matrix, BackdropTemplateMixin and "BackdropTemplate" or nil)
+    row:SetPoint("TOPLEFT", 0, -MATRIX_HEADER_H - (rowIndex - 1) * MATRIX_CELL_H)
+    row:SetPoint("TOPRIGHT", 0, -MATRIX_HEADER_H - (rowIndex - 1) * MATRIX_CELL_H); row:SetHeight(MATRIX_CELL_H)
+    local zebra = (rowIndex % 2 == 0) and COLORS.primary or COLORS.primaryAlt
+    Backdrop(row, 1, zebra, COLORS.primary)
+
+    -- Row header: name — realm  meta \n  freshness + row-bulk
+    local nameStr = Text(row, "LEFT", 12, true); nameStr:SetPoint("TOPLEFT", 10, -3)
+    nameStr:SetText(character.name or "?"); SetColor(function(...) nameStr:SetTextColor(...) end, COLORS.text)
+    local realmStr = Text(row, "LEFT", 12, true); realmStr:SetPoint("LEFT", nameStr, "RIGHT", 6, 0)
+    realmStr:SetText("— " .. (character.realm or "?")); SetColor(function(...) realmStr:SetTextColor(...) end, COLORS.indicator)
+    local class = FormatClass(character.class)
+    local metaLine = Text(row, "LEFT", 10); metaLine:SetPoint("BOTTOMLEFT", 10, 4); metaLine:SetPoint("RIGHT", row, "TOPLEFT", MATRIX_ROW_HEADER_W - 90, 0)
+    local guildBit = character.guildName and string.format("|cff8fb6f0<%s>|r", character.guildName) or "|cff787878no guild|r"
+    metaLine:SetText(string.format("%s  |cff9c9c9c· %s|r", guildBit, class or "?"))
+
+    -- Freshness dot + text
+    local newestStamp, newestStatus = nil, nil
+    for _, loc in ipairs({ "bags", "bank", "equipped", "mail", "auctions" }) do
+      local info = self:GetLocationFreshness(key, loc)
+      if info.stamp and (not newestStamp or info.stamp > newestStamp) then newestStamp, newestStatus = info.stamp, info.status end
+    end
+    local goldInfo = self:GetLocationFreshness(key, "gold")
+    if goldInfo.stamp and (not newestStamp or goldInfo.stamp > newestStamp) then newestStamp, newestStatus = goldInfo.stamp, goldInfo.status end
+    local dot = row:CreateTexture(nil, "OVERLAY"); dot:SetSize(6, 6); dot:SetTexture("Interface\\Buttons\\WHITE8X8")
+    dot:SetPoint("TOPRIGHT", row, "TOPLEFT", MATRIX_ROW_HEADER_W - 86, -6)
+    local c = COLORS_STALE[newestStatus or "never"]; dot:SetColorTexture(c[1], c[2], c[3], 1)
+    local ageText = Text(row, "LEFT", 10); ageText:SetPoint("LEFT", dot, "RIGHT", 4, 0)
+    ageText:SetText(newestStamp and self:FormatAge(time() - newestStamp) or "never")
+    SetColor(function(...) ageText:SetTextColor(...) end, COLORS_SUBTLE)
+
+    -- Row-bulk links
+    local linkAll = TextLink(row, "all", function() ApplyRowBulk(self, key, "all") end)
+    local linkNone = TextLink(row, "none", function() ApplyRowBulk(self, key, "none") end)
+    local linkFlip = TextLink(row, "flip", function() ApplyRowBulk(self, key, "flip") end)
+    linkAll:SetPoint("BOTTOMRIGHT", row, "TOPLEFT", MATRIX_ROW_HEADER_W - 4, 6)
+    linkNone:SetPoint("RIGHT", linkAll, "LEFT", -4, 0)
+    linkFlip:SetPoint("RIGHT", linkNone, "LEFT", -4, 0)
+
+    -- Cells
+    for i, def in ipairs(MATRIX_SOURCES) do
+      local x = MATRIX_ROW_HEADER_W + (i - 1) * cellW
+      local source = def.key
+      local cell = MatrixCell(row,
+        function() return CharGet(self, key, source) end,
+        function(v) CharSet(self, key, source, v) end)
+      cell:SetSize(cellW, MATRIX_CELL_H); cell:SetPoint("TOPLEFT", x, 0)
+    end
+
+    matrix.rows[#matrix.rows + 1] = row
+  end
+  local totalH = MATRIX_HEADER_H + #characterKeys * MATRIX_CELL_H
+  matrix:SetHeight(totalH)
+  matrix.totalHeight = totalH
+  return matrix
 end
 
 function SL:BuildGuildCard(parent, guildKey)
@@ -367,54 +534,55 @@ function SL:BuildGuildCard(parent, guildKey)
   return card
 end
 
-function SL:RelayoutSources()
-  local y = -4
-  for _, group in ipairs(self.sourceGroups or {}) do
-    group.label:ClearAllPoints(); group.label:SetPoint("TOPLEFT", 10, y)
-    group.count:ClearAllPoints(); group.count:SetPoint("LEFT", group.label, "RIGHT", 8, 0)
-    y = y - 22
-    for _, card in ipairs(group.cards) do
-      card:ClearAllPoints(); card:SetPoint("TOPLEFT", 6, y); card:SetPoint("TOPRIGHT", -6, y)
-      y = y - (card:GetHeight() + CARDS_GAP)
-    end
-    y = y - 8
-  end
-  self.optionsContent:SetHeight(math.max(1, -y + 8))
-end
-
 function SL:RefreshOptions()
   if not self.options or not self.options:IsShown() then return end
-  for _, group in ipairs(self.sourceGroups or {}) do
-    for _, card in ipairs(group.cards) do card:Hide(); card:SetParent(nil) end
-    group.label:Hide(); group.label:SetParent(nil)
-    group.count:Hide(); group.count:SetParent(nil)
+  -- clear all children of the scrollable content frame (both the matrix and
+  -- the guild cards) — no partial reuse; we rebuild fresh on every refresh
+  -- so preset changes and freshness updates land instantly.
+  if self.sourceWidgets then
+    for _, w in ipairs(self.sourceWidgets) do w:Hide(); w:SetParent(nil) end
   end
-  self.sourceGroups = {}
+  self.sourceWidgets = {}
   local content = self.optionsContent
+  local y = -4
 
-  local characterLabel = Text(content, "LEFT", 12, true); characterLabel:SetText("CHARACTERS")
-  SetColor(function(...) characterLabel:SetTextColor(...) end, COLORS.indicator)
   local characterKeys = {}
   for key in pairs(self.db.characters or {}) do characterKeys[#characterKeys + 1] = key end
   table.sort(characterKeys)
-  local characterCount = Text(content, "LEFT", 11); characterCount:SetText(string.format("%d recorded", #characterKeys))
-  SetColor(function(...) characterCount:SetTextColor(...) end, COLORS_SUBTLE)
-  local characterCards = {}
-  for _, key in ipairs(characterKeys) do characterCards[#characterCards + 1] = self:BuildCharacterCard(content, key) end
-  self.sourceGroups[#self.sourceGroups + 1] = { label = characterLabel, count = characterCount, cards = characterCards }
+  local charSectionLabel = Text(content, "LEFT", 10, true); charSectionLabel:SetPoint("TOPLEFT", 8, y); charSectionLabel:SetText(string.format("CHARACTERS  |cff9c9c9c%d recorded|r", #characterKeys))
+  SetColor(function(...) charSectionLabel:SetTextColor(...) end, COLORS.indicator)
+  self.sourceWidgets[#self.sourceWidgets + 1] = charSectionLabel
+  y = y - 18
 
-  local guildLabel = Text(content, "LEFT", 12, true); guildLabel:SetText("GUILD BANKS")
-  SetColor(function(...) guildLabel:SetTextColor(...) end, COLORS.indicator)
+  if #characterKeys > 0 then
+    local matrix = self:BuildCharacterMatrix(content, characterKeys)
+    matrix:ClearAllPoints(); matrix:SetPoint("TOPLEFT", 0, y); matrix:SetPoint("TOPRIGHT", 0, y)
+    y = y - matrix.totalHeight - 8
+    self.sourceWidgets[#self.sourceWidgets + 1] = matrix
+    for _, row in ipairs(matrix.rows) do self.sourceWidgets[#self.sourceWidgets + 1] = row end
+  else
+    local empty = Text(content, "LEFT", 11); empty:SetPoint("TOPLEFT", 12, y); empty:SetText("No characters recorded yet — log a character in to add it.")
+    SetColor(function(...) empty:SetTextColor(...) end, COLORS_SUBTLE)
+    y = y - 20
+    self.sourceWidgets[#self.sourceWidgets + 1] = empty
+  end
+
   local guildKeys = {}
   for key in pairs(self.db.guilds or {}) do guildKeys[#guildKeys + 1] = key end
   table.sort(guildKeys)
-  local guildCount = Text(content, "LEFT", 11); guildCount:SetText(string.format("%d recorded", #guildKeys))
-  SetColor(function(...) guildCount:SetTextColor(...) end, COLORS_SUBTLE)
-  local guildCards = {}
-  for _, key in ipairs(guildKeys) do guildCards[#guildCards + 1] = self:BuildGuildCard(content, key) end
-  self.sourceGroups[#self.sourceGroups + 1] = { label = guildLabel, count = guildCount, cards = guildCards }
+  local guildLabel = Text(content, "LEFT", 10, true); guildLabel:SetPoint("TOPLEFT", 8, y); guildLabel:SetText(string.format("GUILD BANKS  |cff9c9c9c%d recorded|r", #guildKeys))
+  SetColor(function(...) guildLabel:SetTextColor(...) end, COLORS.indicator)
+  self.sourceWidgets[#self.sourceWidgets + 1] = guildLabel
+  y = y - 20
 
-  self:RelayoutSources()
+  for _, key in ipairs(guildKeys) do
+    local card = self:BuildGuildCard(content, key)
+    card:ClearAllPoints(); card:SetPoint("TOPLEFT", 6, y); card:SetPoint("TOPRIGHT", -6, y)
+    y = y - card:GetHeight() - CARDS_GAP
+    self.sourceWidgets[#self.sourceWidgets + 1] = card
+  end
+
+  content:SetHeight(math.max(1, -y + 8))
 
   local stale = self.GetStaleSources and self:GetStaleSources() or {}
   if self.staleFooter then
@@ -428,11 +596,21 @@ function SL:RefreshOptions()
   end
 end
 
+-- Kept for callers that used the old name (CreateCard.SetExpanded).
+function SL:RelayoutSources() self:RefreshOptions() end
+
 function SL:InitializeUI()
   local frame = CreateFrame("Frame", "GoblinFrame", UIParent, BackdropTemplateMixin and "BackdropTemplate" or nil)
   frame:SetSize(math.min(1200, math.max(790, self.db.window.width or 790)), math.min(900, math.max(450, self.db.window.height or 650))); frame:SetPoint("CENTER"); frame:SetMovable(true); frame:SetResizable(true); frame:EnableMouse(true); frame:EnableMouseWheel(true); frame:SetClampedToScreen(true)
   frame:SetFrameStrata("HIGH")
   frame:SetToplevel(true)
+  -- Escape closes the window (WoW's standard convention). Guard against
+  -- double-insert so /reload doesn't stack duplicates.
+  if UISpecialFrames then
+    local already = false
+    for _, name in ipairs(UISpecialFrames) do if name == "GoblinFrame" then already = true; break end end
+    if not already then table.insert(UISpecialFrames, "GoblinFrame") end
+  end
   frame:SetResizeBounds(790, 450, 1200, 900)
   frame:RegisterForDrag("LeftButton"); frame:SetScript("OnDragStart", frame.StartMoving); frame:SetScript("OnDragStop", frame.StopMovingOrSizing)
   Backdrop(frame, 1, COLORS.primaryAlt); frame:Hide(); self.frame = frame
@@ -477,8 +655,26 @@ function SL:InitializeUI()
       local cell = Text(row, column.align or "RIGHT", 12, false, column.key ~= "name"); cell:SetPoint("TOPLEFT", columnX, 0); cell:SetSize(column.width - 6, ROW_HEIGHT); cell:SetJustifyV("MIDDLE")
       row.columns[column.key] = cell; columnX = columnX + column.width
     end
-    row:SetScript("OnEnter", function(r) if r.data and r.data.link then GameTooltip:SetOwner(r, "ANCHOR_RIGHT"); GameTooltip:SetHyperlink(r.data.link); GameTooltip:AddLine(" "); GameTooltip:AddDoubleLine("TSM unit value", self:FormatMoney(r.data.unitPrice)); GameTooltip:Show() end end)
-    row:SetScript("OnLeave", GameTooltip_Hide); self.rows[index] = row
+    row:RegisterForClicks("LeftButtonUp", "RightButtonUp")
+    row:SetScript("OnEnter", function(r)
+      if r.data and r.data.link then
+        GameTooltip:SetOwner(r, "ANCHOR_RIGHT"); GameTooltip:SetHyperlink(r.data.link)
+        GameTooltip:AddLine(" ")
+        GameTooltip:AddDoubleLine("TSM unit value", self:FormatMoney(r.data.unitPrice))
+        GameTooltip:AddLine("|cffababab shift-click to link, right-click to trace sources|r")
+        GameTooltip:Show()
+      end
+    end)
+    row:SetScript("OnLeave", GameTooltip_Hide)
+    row:SetScript("OnClick", function(r, mouseButton)
+      if not r.data then return end
+      if mouseButton == "RightButton" then
+        self:TraceItem(r.data.name or r.data.itemString or "")
+      elseif IsShiftKeyDown() and r.data.link and ChatEdit_InsertLink then
+        ChatEdit_InsertLink(r.data.link)
+      end
+    end)
+    self.rows[index] = row
   end
   local scroll = CreateFrame("Slider", nil, frame); scroll:SetOrientation("VERTICAL"); scroll:SetWidth(12); scroll:SetPoint("TOPRIGHT", -2, -96); scroll:SetPoint("BOTTOMRIGHT", -2, 43); scroll:SetMinMaxValues(0, 0); scroll:SetValueStep(1); scroll:SetObeyStepOnDrag(true)
   local thumb = scroll:CreateTexture(nil, "ARTWORK"); thumb:SetSize(4, 42); SetColor(function(...) thumb:SetColorTexture(...) end, COLORS.activeAlt); scroll:SetThumbTexture(thumb)

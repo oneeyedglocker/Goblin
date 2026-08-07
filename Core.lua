@@ -441,6 +441,79 @@ function SL:PrintCoverageReport(mode)
   if not showAll then print("  |cffababab(use /goblin coverage all to also show fresh, priced sources)|r") end
 end
 
+-- Item-by-item comparison against TSM's canonical NumInventory count. Returns
+-- discrepancies sorted by absolute delta so the biggest gaps float to the top.
+function SL:BuildTSMDiff(threshold)
+  threshold = tonumber(threshold) or 0
+  local result = { matches = 0, discrepancies = {}, tsmOnly = {}, error = nil }
+  if not (TSM_API and TSM_API.GetCustomPriceValue) then
+    result.error = "TSM_API not available. Ensure TradeSkillMaster is loaded."
+    return result
+  end
+  local goblinTotals, goblinNames, goblinLinks = {}, {}, {}
+  local function tally(bucket)
+    for itemString, item in pairs(bucket or {}) do
+      local count = item.count or 0
+      if count > 0 then
+        goblinTotals[itemString] = (goblinTotals[itemString] or 0) + count
+        goblinNames[itemString] = goblinNames[itemString] or item.name or item.itemString
+        goblinLinks[itemString] = goblinLinks[itemString] or item.link
+      end
+    end
+  end
+  for _, character in pairs(self.db.characters or {}) do
+    for _, items in pairs(character.locations or {}) do tally(items) end
+  end
+  for _, guild in pairs(self.db.guilds or {}) do
+    for _, tab in pairs(guild.tabs or {}) do tally(tab) end
+  end
+  for _, record in pairs(self.db.mailTransit or {}) do
+    if record.status == "pending" then tally(record.items) end
+  end
+  for itemString, goblinCount in pairs(goblinTotals) do
+    local ok, tsmCount = pcall(TSM_API.GetCustomPriceValue, "NumInventory", itemString)
+    tsmCount = ok and tonumber(tsmCount) or nil
+    if tsmCount then
+      local delta = tsmCount - goblinCount
+      if math.abs(delta) <= threshold then
+        result.matches = result.matches + 1
+      else
+        result.discrepancies[#result.discrepancies + 1] = {
+          itemString = itemString, name = goblinNames[itemString], link = goblinLinks[itemString],
+          goblin = goblinCount, tsm = tsmCount, delta = delta,
+        }
+      end
+    end
+  end
+  table.sort(result.discrepancies, function(a, b) return math.abs(a.delta) > math.abs(b.delta) end)
+  return result
+end
+
+function SL:PrintTSMDiff(threshold, limit)
+  limit = tonumber(limit) or 40
+  local diff = self:BuildTSMDiff(threshold)
+  if diff.error then print("|cffff5555Goblin:|r " .. diff.error); return end
+  print(string.format("|cffffd839Goblin vs TSM diff|r  (%d items match within %d, %d differ)",
+    diff.matches, tonumber(threshold) or 0, #diff.discrepancies))
+  if #diff.discrepancies == 0 then
+    print("|cff30d97fEverything Goblin knows about matches TSM's NumInventory.|r")
+    return
+  end
+  local shown = 0
+  for _, row in ipairs(diff.discrepancies) do
+    shown = shown + 1
+    if shown > limit then
+      print(string.format("  |cffababab… %d more|r  (use /goblin diff %s %d to see all)",
+        #diff.discrepancies - limit, tostring(threshold or 0), #diff.discrepancies))
+      break
+    end
+    local color = row.delta > 0 and "|cffff9d33" or "|cff8fb6f0"
+    print(string.format("  %s%+d|r  Goblin %d ↔ TSM %d   %s",
+      color, row.delta, row.goblin, row.tsm, row.link or row.name or row.itemString))
+  end
+  print("|cffababab  positive delta = TSM sees more than Goblin (Goblin missing items)|r")
+end
+
 function SL:TraceItem(term)
   term = strlower(strtrim(term or ""))
   if term == "" then print("|cffffd839Goblin:|r usage: /goblin trace <item name or itemID>"); return end
@@ -505,6 +578,9 @@ SlashCmdList.GOBLIN = function(msg)
     end
   elseif head == "trace" or head == "find" then SL:TraceItem(tail)
   elseif head == "coverage" or head == "check" then SL:PrintCoverageReport(strlower(tail or ""))
+  elseif head == "diff" or head == "tsm" then
+    local a, b = tail:match("^(%S*)%s*(%S*)$")
+    SL:PrintTSMDiff(a ~= "" and a or nil, b ~= "" and b or nil)
   elseif head == "rescan" then
     if GetGuildInfo and GetGuildInfo("player") then
       print("|cffffd839Goblin:|r wiping stored guild-bank contents and re-querying. Keep the guild bank open.")
@@ -518,6 +594,7 @@ SlashCmdList.GOBLIN = function(msg)
     print("  /goblin trace <name> — show every source Goblin has for an item")
     print("  /goblin coverage — per-character/guild source scan status and warnings")
     print("  /goblin coverage all — same but also lists fresh, priced sources")
+    print("  /goblin diff [threshold] — per-item Goblin vs TSM NumInventory diff (default threshold 0)")
     print("  /goblin rescan — wipe current guild bank cache and re-query")
   else SL:ToggleUI() end
 end
