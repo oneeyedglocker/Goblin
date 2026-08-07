@@ -21,7 +21,16 @@ local function AddItem(target, link, count, isBound)
 end
 
 local function GetContainerSlots(bag)
-  return C_Container and C_Container.GetContainerNumSlots(bag) or GetContainerNumSlots(bag)
+  local n
+  if C_Container and C_Container.GetContainerNumSlots then
+    n = C_Container.GetContainerNumSlots(bag)
+  else
+    n = GetContainerNumSlots(bag)
+  end
+  -- Some TBC Classic builds return nil for bank containers before the bank
+  -- data has streamed in; treat that as zero slots so the outer for loop
+  -- doesn't error and the caller commits an empty bucket instead of aborting.
+  return tonumber(n) or 0
 end
 
 local function GetContainerItem(bag, slot)
@@ -274,22 +283,47 @@ function SL:RequestAllGuildBankTabs()
   end
 end
 
+local bankOpen = false
+
 function SL:InitializeScanner()
   local eventNames = {
-    "BAG_UPDATE_DELAYED", "PLAYER_EQUIPMENT_CHANGED", "PLAYER_MONEY", "BANKFRAME_OPENED",
+    "BAG_UPDATE_DELAYED", "PLAYER_EQUIPMENT_CHANGED", "PLAYER_MONEY",
+    "BANKFRAME_OPENED", "BANKFRAME_CLOSED", "PLAYERBANKSLOTS_CHANGED", "PLAYERBANKBAGSLOTS_CHANGED",
     "MAIL_SHOW", "MAIL_INBOX_UPDATE", "AUCTION_HOUSE_SHOW", "AUCTION_OWNED_LIST_UPDATE",
     "GUILDBANKFRAME_OPENED", "GUILDBANKBAGSLOTS_CHANGED", "PLAYER_GUILD_UPDATE",
   }
   for _, event in ipairs(eventNames) do pcall(Scanner.RegisterEvent, Scanner, event) end
   Scanner:SetScript("OnEvent", function(_, event)
-    if event == "BAG_UPDATE_DELAYED" then self:ScanBags()
-    elseif event == "PLAYER_EQUIPMENT_CHANGED" then self:ScanEquipped()
-    elseif event == "PLAYER_MONEY" then self:UpdateMoney()
-    elseif event == "BANKFRAME_OPENED" then self:ScanBank()
-    elseif event == "MAIL_SHOW" or event == "MAIL_INBOX_UPDATE" then self:ScanMail()
-    elseif event == "AUCTION_HOUSE_SHOW" or event == "AUCTION_OWNED_LIST_UPDATE" then self:ScanAuctions()
-    elseif event == "GUILDBANKFRAME_OPENED" then self:ScanGuildBank(); self:RequestAllGuildBankTabs()
-    elseif event == "GUILDBANKBAGSLOTS_CHANGED" then self:ScanGuildBank(true)
-    elseif event == "PLAYER_GUILD_UPDATE" then self:GetCharacter(); if self.RefreshUI then self:RefreshUI() end end
+    -- pcall the dispatch so a scan error can't silently freeze future scans
+    -- for the session (previously any error in one scan aborted its
+    -- CommitCharacterLocation call, leaving buckets nil forever).
+    local ok, err = pcall(function()
+      if event == "BAG_UPDATE_DELAYED" then
+        self:ScanBags()
+        if bankOpen then self:ScanBank() end
+      elseif event == "PLAYER_EQUIPMENT_CHANGED" then self:ScanEquipped()
+      elseif event == "PLAYER_MONEY" then self:UpdateMoney()
+      elseif event == "BANKFRAME_OPENED" then
+        bankOpen = true
+        -- Initial best-effort scan; PLAYERBANKSLOTS_CHANGED will re-scan
+        -- as the server streams the real bag data.
+        self:ScanBank()
+      elseif event == "BANKFRAME_CLOSED" then
+        -- Final authoritative scan on close so anything the user changed
+        -- while browsing is captured before they walk away.
+        if bankOpen then self:ScanBank() end
+        bankOpen = false
+      elseif event == "PLAYERBANKSLOTS_CHANGED" or event == "PLAYERBANKBAGSLOTS_CHANGED" then
+        if bankOpen then self:ScanBank() end
+      elseif event == "MAIL_SHOW" or event == "MAIL_INBOX_UPDATE" then self:ScanMail()
+      elseif event == "AUCTION_HOUSE_SHOW" or event == "AUCTION_OWNED_LIST_UPDATE" then self:ScanAuctions()
+      elseif event == "GUILDBANKFRAME_OPENED" then self:ScanGuildBank(); self:RequestAllGuildBankTabs()
+      elseif event == "GUILDBANKBAGSLOTS_CHANGED" then self:ScanGuildBank(true)
+      elseif event == "PLAYER_GUILD_UPDATE" then self:GetCharacter(); if self.RefreshUI then self:RefreshUI() end
+      end
+    end)
+    if not ok then
+      print("|cffff5555Goblin scan error (" .. tostring(event) .. "):|r " .. tostring(err))
+    end
   end)
 end
