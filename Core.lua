@@ -1,6 +1,6 @@
 local ADDON_NAME, SL = ...
 
-SL.VERSION = "0.5.0"
+SL.VERSION = "0.6.0"
 SL.CATEGORIES = { "bags", "bank", "equipped", "mail", "auctions", "guild" }
 SL.CATEGORY_LABELS = {
   bags = "Bags", bank = "Bank", equipped = "Equipped", mail = "Mail",
@@ -25,6 +25,7 @@ local DEFAULTS = {
   },
   characters = {},
   guilds = {},
+  mailTransit = {},
   window = {},
 }
 
@@ -155,15 +156,22 @@ function SL:BuildLedger(filter)
       end
     end
   end
+  if self.PruneMailTransit then self:PruneMailTransit() end
+  local transitByCharacter, transitGold = {}, {}
+  if self.CollectMailTransit then transitByCharacter, transitGold = self:CollectMailTransit() end
   for key, character in pairs(self.db.characters) do
     if self:IsCharacterIncluded(key) then
       if self.db.settings.includeGold and self:IsCharacterGoldIncluded(key) then
         totalGold = totalGold + (character.gold or 0)
+        totalGold = totalGold + (transitGold[key] or 0)
       end
       for _, location in ipairs(self.CATEGORIES) do
         if location ~= "guild" and self:IsCharacterCategoryIncluded(key, location) then
           Add(location, character.locations and character.locations[location])
         end
+      end
+      if self:IsCharacterCategoryIncluded(key, "mail") then
+        Add("mail", transitByCharacter[key])
       end
     end
   end
@@ -210,6 +218,7 @@ events:SetScript("OnEvent", function(_, event, name)
   elseif event == "PLAYER_LOGIN" then
     SL:GetCharacter()
     SL:InitializeScanner()
+    SL:InitializeMailLedger()
     local uiOK, uiError = pcall(function() SL:InitializeUI() end)
     if not uiOK then
       print("|cffff5555Goblin UI error:|r " .. tostring(uiError))

@@ -79,6 +79,7 @@ function SL:ScanMail()
     end
   end
   self:CommitCharacterLocation("mail", items)
+  if self.ReconcileMailTransit then self:ReconcileMailTransit() end
 end
 
 function SL:ScanAuctions()

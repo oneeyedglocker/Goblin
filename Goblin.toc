@@ -2,10 +2,11 @@
 ## Title: |cff00fe00Goblin|r
 ## Notes: A selective, TSM-priced account net worth ledger for TBC Classic.
 ## Author: Codex and contributors
-## Version: 0.5.0
+## Version: 0.6.0
 ## SavedVariables: GoblinDB
 ## RequiredDeps: TradeSkillMaster
 
 Core.lua
 Scanner.lua
+Ledger.lua
 UI.lua
