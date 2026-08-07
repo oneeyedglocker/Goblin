@@ -324,6 +324,123 @@ events:SetScript("OnEvent", function(_, event, name)
   end
 end)
 
+local CHARACTER_SOURCES = { "bags", "bank", "equipped", "mail", "auctions" }
+
+-- Structured picture of every character/guild source, what's enabled, when
+-- it was last scanned, how many items live there, and how many of those
+-- have no TSM price (and therefore contribute 0 to net worth).
+function SL:GetCoverageReport()
+  local report = { characters = {}, guilds = {}, warnings = {}, totals = { itemsPriced = 0, itemsUnpriced = 0 } }
+  local now = time()
+  local function scanBucket(items)
+    local itemCount, unpricedCount, unpricedTotal = 0, 0, 0
+    for itemString, item in pairs(items or {}) do
+      local count = item.count or 0
+      if count > 0 then
+        itemCount = itemCount + 1
+        local price = self:GetPrice(itemString) or 0
+        if not price or price == 0 then
+          unpricedCount = unpricedCount + 1
+          unpricedTotal = unpricedTotal + count
+          report.totals.itemsUnpriced = report.totals.itemsUnpriced + 1
+        else
+          report.totals.itemsPriced = report.totals.itemsPriced + 1
+        end
+      end
+    end
+    return itemCount, unpricedCount, unpricedTotal
+  end
+  for key, character in pairs(self.db.characters or {}) do
+    local charEnabled = self:IsCharacterIncluded(key)
+    local row = {
+      key = key, name = character.name, realm = character.realm,
+      class = character.class, enabled = charEnabled,
+      gold = { enabled = self:IsCharacterGoldIncluded(key), amount = character.gold or 0, updatedAt = character.moneyUpdated },
+      sources = {},
+    }
+    for _, loc in ipairs(CHARACTER_SOURCES) do
+      local items = character.locations and character.locations[loc]
+      local itemCount, unpricedCount = scanBucket(items)
+      local lastScanned = character.updated and character.updated[loc]
+      local enabled = self:IsCharacterCategoryIncluded(key, loc)
+      local src = { name = loc, enabled = enabled, lastScanned = lastScanned, itemCount = itemCount, unpricedCount = unpricedCount }
+      row.sources[#row.sources + 1] = src
+      if charEnabled and enabled and not lastScanned then
+        report.warnings[#report.warnings + 1] = string.format("%s: %s never scanned — visit the location once", key, loc)
+      elseif itemCount > 0 and (not charEnabled or not enabled) then
+        report.warnings[#report.warnings + 1] = string.format("%s: %s has %d item(s) but %s — those won't count",
+          key, loc, itemCount, charEnabled and "the source pill is off" or "the character is disabled")
+      end
+    end
+    report.characters[#report.characters + 1] = row
+  end
+  for key, guild in pairs(self.db.guilds or {}) do
+    local gEnabled = self:IsGuildIncluded(key)
+    local row = { key = key, name = guild.name, realm = guild.realm, enabled = gEnabled,
+      gold = { enabled = self:IsGuildGoldIncluded(key), amount = guild.gold or 0, updatedAt = guild.goldUpdated },
+      tabs = {}, }
+    local tabs = {}
+    for tab in pairs(guild.tabs or {}) do tabs[#tabs + 1] = tab end
+    table.sort(tabs)
+    for _, tab in ipairs(tabs) do
+      local itemCount, unpricedCount = scanBucket(guild.tabs[tab])
+      local lastScanned = guild.tabUpdated and guild.tabUpdated[tab]
+      local enabled = self:IsGuildTabIncluded(key, tab)
+      row.tabs[#row.tabs + 1] = { index = tab, name = (guild.tabNames and guild.tabNames[tab]) or ("Tab " .. tab),
+        enabled = enabled, lastScanned = lastScanned, itemCount = itemCount, unpricedCount = unpricedCount }
+      if gEnabled and enabled and not lastScanned then
+        report.warnings[#report.warnings + 1] = string.format("<%s> tab %d never scanned — open the guild bank once", guild.name or key, tab)
+      elseif itemCount > 0 and (not gEnabled or not enabled) then
+        report.warnings[#report.warnings + 1] = string.format("<%s> tab %d has %d item(s) but %s", guild.name or key, tab, itemCount, gEnabled and "the tab is off" or "the guild is disabled")
+      end
+    end
+    report.guilds[#report.guilds + 1] = row
+  end
+  return report
+end
+
+function SL:PrintCoverageReport(mode)
+  local report = self:GetCoverageReport()
+  local showAll = mode == "all"
+  local function ageStr(t) return t and (self:FormatAge(time() - t) .. " ago") or "|cffff5555never|r" end
+  local function fmtCount(itemCount, unpricedCount)
+    if itemCount == 0 then return "|cff787878empty|r" end
+    if unpricedCount > 0 then return string.format("%d items, |cffff9d33%d unpriced|r", itemCount, unpricedCount) end
+    return string.format("%d items", itemCount)
+  end
+  print(string.format("|cffffd839Goblin coverage report|r  (%d priced / %d unpriced items in DB)",
+    report.totals.itemsPriced, report.totals.itemsUnpriced))
+  for _, char in ipairs(report.characters) do
+    print(string.format("  |cffffffff%s|r%s   gold %s (%s)",
+      char.key, char.enabled and "" or " |cff787878DISABLED|r",
+      self:FormatMoney(char.gold.amount), ageStr(char.gold.updatedAt)))
+    for _, src in ipairs(char.sources) do
+      local off = src.enabled and "" or " |cff787878off|r"
+      if showAll or (not src.lastScanned) or (src.itemCount == 0) or (src.unpricedCount > 0) or not src.enabled then
+        print(string.format("    %-8s  %-18s  %s%s", src.name, fmtCount(src.itemCount, src.unpricedCount), ageStr(src.lastScanned), off))
+      end
+    end
+  end
+  for _, guild in ipairs(report.guilds) do
+    print(string.format("  |cff8fb6f0<%s>|r%s   guild gold %s (%s)",
+      guild.name or guild.key, guild.enabled and "" or " |cff787878DISABLED|r",
+      self:FormatMoney(guild.gold.amount), ageStr(guild.gold.updatedAt)))
+    for _, tab in ipairs(guild.tabs) do
+      local off = tab.enabled and "" or " |cff787878off|r"
+      if showAll or (not tab.lastScanned) or (tab.unpricedCount > 0) or not tab.enabled then
+        print(string.format("    tab %d %-14s  %-18s  %s%s", tab.index, tab.name, fmtCount(tab.itemCount, tab.unpricedCount), ageStr(tab.lastScanned), off))
+      end
+    end
+  end
+  if #report.warnings > 0 then
+    print("|cffff9d33Warnings:|r")
+    for _, w in ipairs(report.warnings) do print("  " .. w) end
+  else
+    print("|cff30d97fNo coverage issues detected.|r")
+  end
+  if not showAll then print("  |cffababab(use /goblin coverage all to also show fresh, priced sources)|r") end
+end
+
 function SL:TraceItem(term)
   term = strlower(strtrim(term or ""))
   if term == "" then print("|cffffd839Goblin:|r usage: /goblin trace <item name or itemID>"); return end
@@ -387,6 +504,7 @@ SlashCmdList.GOBLIN = function(msg)
       end
     end
   elseif head == "trace" or head == "find" then SL:TraceItem(tail)
+  elseif head == "coverage" or head == "check" then SL:PrintCoverageReport(strlower(tail or ""))
   elseif head == "rescan" then
     if GetGuildInfo and GetGuildInfo("player") then
       print("|cffffd839Goblin:|r wiping stored guild-bank contents and re-querying. Keep the guild bank open.")
@@ -398,6 +516,8 @@ SlashCmdList.GOBLIN = function(msg)
     print("  /goblin mail — list in-flight mail shipments")
     print("  /goblin stale — list unscanned/stale sources")
     print("  /goblin trace <name> — show every source Goblin has for an item")
+    print("  /goblin coverage — per-character/guild source scan status and warnings")
+    print("  /goblin coverage all — same but also lists fresh, priced sources")
     print("  /goblin rescan — wipe current guild bank cache and re-query")
   else SL:ToggleUI() end
 end
