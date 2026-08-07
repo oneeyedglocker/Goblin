@@ -81,6 +81,7 @@ function SL:ScanMail()
   end
   self:CommitCharacterLocation("mail", items)
   if self.ReconcileMailTransit then self:ReconcileMailTransit() end
+  if self.ReconcileAuctionsAgainstMail then self:ReconcileAuctionsAgainstMail() end
 end
 
 function SL:ScanAuctions()
@@ -92,6 +93,77 @@ function SL:ScanAuctions()
     AddItem(items, link, stackCount)
   end
   self:CommitCharacterLocation("auctions", items)
+  -- Persist the raw AH scan separately so ReconcileAuctionsAgainstMail can
+  -- derive an accurate visible-auctions count without losing the baseline.
+  local character = self:GetCharacter()
+  local raw = NewItemTable()
+  for k, v in pairs(items) do
+    raw[k] = { itemID = v.itemID, link = v.link, name = v.name, count = v.count, boundCount = v.boundCount }
+  end
+  character.auctionsScanRaw = raw
+end
+
+-- Auction-return-mail reconciliation: when items come back from the AH via
+-- mail (expired, cancelled, or sold-invoice), the seller's mail bucket picks
+-- them up on the next mail scan while the auctions bucket still holds the
+-- stale pre-return quantity. This function derives locations.auctions from
+-- the last raw AH scan minus the quantities currently sitting in AH-return
+-- mails, so a mail-only visit deduplicates the count automatically.
+function SL:ReconcileAuctionsAgainstMail()
+  local character = self:GetCharacter()
+  local raw = character.auctionsScanRaw
+  if not raw then return end
+  local result = {}
+  for k, v in pairs(raw) do
+    result[k] = { itemID = v.itemID, link = v.link, name = v.name, count = v.count, boundCount = v.boundCount }
+  end
+
+  local function subjectPrefix(tmpl)
+    if not tmpl then return nil end
+    return (tmpl:gsub("%%s", ""))
+  end
+  local prefixes = {
+    { p = subjectPrefix(AUCTION_EXPIRED_MAIL_SUBJECT),   kind = "expired" },
+    { p = subjectPrefix(AUCTION_REMOVED_MAIL_SUBJECT),   kind = "cancelled" },
+    { p = subjectPrefix(AUCTION_SOLD_MAIL_SUBJECT),      kind = "sold" },
+  }
+
+  local function classify(subject)
+    if not subject then return nil end
+    for _, entry in ipairs(prefixes) do
+      if entry.p and subject:sub(1, #entry.p) == entry.p then
+        return entry.kind, subject:sub(#entry.p + 1)
+      end
+    end
+  end
+
+  local function deduct(name, qty)
+    if not name or not qty or qty <= 0 then return end
+    for k, v in pairs(result) do
+      if v.name == name or (v.link and GetItemInfo(v.link) == name) then
+        v.count = math.max(0, (v.count or 0) - qty)
+        if v.count == 0 then result[k] = nil end
+        return
+      end
+    end
+  end
+
+  for index = 1, GetInboxNumItems() do
+    local _, _, _, subject = GetInboxHeaderInfo(index)
+    local kind, subjectItemName = classify(subject)
+    if kind == "sold" and GetInboxInvoiceInfo then
+      local invType, itemName, _, _, _, _, _, _, itemCount = GetInboxInvoiceInfo(index)
+      if invType == "seller" and itemCount and itemCount > 0 then
+        deduct(itemName or subjectItemName, itemCount)
+      end
+    elseif kind == "expired" or kind == "cancelled" then
+      local link = GetInboxItemLink(index, 1)
+      local _, _, _, quantity = GetInboxItem(index, 1)
+      local name = link and GetItemInfo(link) or subjectItemName
+      deduct(name, quantity)
+    end
+  end
+  character.locations.auctions = result
 end
 
 -- ScanSingleGuildTab has two modes:
