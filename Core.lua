@@ -402,7 +402,7 @@ end
 function SL:PrintCoverageReport(mode)
   local report = self:GetCoverageReport()
   local showAll = mode == "all"
-  local function ageStr(t) return t and (self:FormatAge(time() - t) .. " ago") or "|cffff5555never|r" end
+  local function ageStr(t) return t and self:FormatAge(time() - t) or "|cffff5555never|r" end
   local function fmtCount(itemCount, unpricedCount)
     if itemCount == 0 then return "|cff787878empty|r" end
     if unpricedCount > 0 then return string.format("%d items, |cffff9d33%d unpriced|r", itemCount, unpricedCount) end

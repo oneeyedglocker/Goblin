@@ -11,5 +11,6 @@ Scanner.lua
 Ledger.lua
 UI.lua
 Summary.lua
+Coverage.lua
 History.lua
 Minimap.lua

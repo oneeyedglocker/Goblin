@@ -298,6 +298,23 @@ function SL:CreateOptions()
     anchor = chip
   end
 
+  -- Soulbound global toggle sits to the right of the presets so users can
+  -- flip whether locked/soulbound gear rolls into the ledger without
+  -- opening a separate settings panel.
+  local soul = CreateFrame("CheckButton", nil, presets, BackdropTemplateMixin and "BackdropTemplate" or nil)
+  soul:SetSize(14, 14); soul:SetPoint("RIGHT", -10, 0)
+  Backdrop(soul, 1, COLORS.primaryAlt, COLORS.active)
+  soul.mark = soul:CreateTexture(nil, "ARTWORK"); soul.mark:SetPoint("TOPLEFT", 2, -2); soul.mark:SetPoint("BOTTOMRIGHT", -2, 2)
+  SetColor(function(...) soul.mark:SetColorTexture(...) end, COLORS.indicator)
+  soul:SetCheckedTexture(soul.mark)
+  soul:SetChecked(self.db.settings.includeSoulbound and true or false)
+  local soulLabel = Text(presets, "RIGHT", 11); soulLabel:SetPoint("RIGHT", soul, "LEFT", -6, 0); soulLabel:SetText("Include soulbound")
+  SetColor(function(...) soulLabel:SetTextColor(...) end, COLORS_SUBTLE)
+  soul:SetScript("OnClick", function(s)
+    self.db.settings.includeSoulbound = s:GetChecked() and true or false
+    self:RefreshUI()
+  end)
+
   local scroll = CreateFrame("ScrollFrame", nil, frame, "UIPanelScrollFrameTemplate")
   scroll:SetPoint("TOPLEFT", 4, -116); scroll:SetPoint("BOTTOMRIGHT", -28, 34)
   local content = CreateFrame("Frame", nil, scroll); content:SetSize(MATRIX_PANEL_W - 36, 1); scroll:SetScrollChild(content)
@@ -389,23 +406,25 @@ local function CharSet(self, key, source, v)
   self.db.settings.characterCategories[key] = self.db.settings.characterCategories[key] or {}
   self.db.settings.characterCategories[key][source] = v
 end
-local function ApplyColumnBulk(self, characterKeys, source, op)
-  for _, key in ipairs(characterKeys) do
-    local current = CharGet(self, key, source)
-    if op == "all" then CharSet(self, key, source, true)
-    elseif op == "none" then CharSet(self, key, source, false)
-    elseif op == "flip" then CharSet(self, key, source, not current) end
-  end
+local function ApplyColumnBulk(self, characterKeys, source, value)
+  for _, key in ipairs(characterKeys) do CharSet(self, key, source, value) end
   self:RefreshUI()
 end
-local function ApplyRowBulk(self, key, op)
-  for _, def in ipairs(MATRIX_SOURCES) do
-    local current = CharGet(self, key, def.key)
-    if op == "all" then CharSet(self, key, def.key, true)
-    elseif op == "none" then CharSet(self, key, def.key, false)
-    elseif op == "flip" then CharSet(self, key, def.key, not current) end
-  end
+local function ApplyRowBulk(self, key, value)
+  for _, def in ipairs(MATRIX_SOURCES) do CharSet(self, key, def.key, value) end
   self:RefreshUI()
+end
+local function AllColumnOn(self, characterKeys, source)
+  for _, key in ipairs(characterKeys) do
+    if not CharGet(self, key, source) then return false end
+  end
+  return #characterKeys > 0
+end
+local function AllRowOn(self, key)
+  for _, def in ipairs(MATRIX_SOURCES) do
+    if not CharGet(self, key, def.key) then return false end
+  end
+  return true
 end
 
 function SL:BuildCharacterMatrix(parent, characterKeys)
@@ -427,12 +446,12 @@ function SL:BuildCharacterMatrix(parent, characterKeys)
     local label = Text(headerRow, "CENTER", 12, true); label:SetPoint("TOP", headerRow, "TOPLEFT", x + cellW / 2, -4); label:SetText(def.label)
     SetColor(function(...) label:SetTextColor(...) end, COLORS.text)
     local source = def.key
-    local linkAll = TextLink(headerRow, "all",  function() ApplyColumnBulk(self, characterKeys, source, "all") end)
-    local linkNone = TextLink(headerRow, "none", function() ApplyColumnBulk(self, characterKeys, source, "none") end)
-    local linkFlip = TextLink(headerRow, "flip", function() ApplyColumnBulk(self, characterKeys, source, "flip") end)
-    linkAll:SetPoint("TOP", headerRow, "TOPLEFT", x + cellW / 2 - 32, -22)
-    linkNone:SetPoint("LEFT", linkAll, "RIGHT", 4, 0)
-    linkFlip:SetPoint("LEFT", linkNone, "RIGHT", 4, 0)
+    local allOn = AllColumnOn(self, characterKeys, source)
+    local toggle = TextLink(headerRow, allOn and "deselect all" or "select all", function()
+      ApplyColumnBulk(self, characterKeys, source, not allOn)
+    end)
+    toggle:SetPoint("TOP", headerRow, "TOPLEFT", x + cellW / 2, -22)
+    toggle.text:SetFont(BODY_FONT, 10)
   end
 
   -- One row per character. Row header has a strict two-column layout:
@@ -487,12 +506,11 @@ function SL:BuildCharacterMatrix(parent, characterKeys)
     local bulkFrame = CreateFrame("Frame", nil, row)
     bulkFrame:SetSize(RIGHT_COL_W, 14)
     bulkFrame:SetPoint("BOTTOMRIGHT", row, "BOTTOMLEFT", MATRIX_ROW_HEADER_W - 8, 4)
-    local linkAll = TextLink(bulkFrame, "all", function() ApplyRowBulk(self, key, "all") end)
-    local linkNone = TextLink(bulkFrame, "none", function() ApplyRowBulk(self, key, "none") end)
-    local linkFlip = TextLink(bulkFrame, "flip", function() ApplyRowBulk(self, key, "flip") end)
-    linkFlip:SetPoint("RIGHT", 0, 0)
-    linkNone:SetPoint("RIGHT", linkFlip, "LEFT", -4, 0)
-    linkAll:SetPoint("RIGHT", linkNone, "LEFT", -4, 0)
+    local rowAllOn = AllRowOn(self, key)
+    local rowToggle = TextLink(bulkFrame, rowAllOn and "deselect all" or "select all", function()
+      ApplyRowBulk(self, key, not rowAllOn)
+    end)
+    rowToggle:SetPoint("RIGHT", 0, 0); rowToggle.text:SetFont(BODY_FONT, 10)
 
     -- Cells
     for i, def in ipairs(MATRIX_SOURCES) do
@@ -661,18 +679,23 @@ function SL:InitializeUI()
   tabInventory:SetSize(72, 22); tabInventory:SetPoint("LEFT", tabSummary, "RIGHT", 8, 0)
   tabInventory.text = tabInventory:CreateFontString(nil, "OVERLAY", "GameFontNormal")
   tabInventory.text:SetPoint("CENTER"); tabInventory.text:SetFont(BODY_BOLD_FONT, 13); tabInventory.text:SetText("Inventory")
+  local tabCoverage = CreateFrame("Button", nil, titleBar)
+  tabCoverage:SetSize(72, 22); tabCoverage:SetPoint("LEFT", tabInventory, "RIGHT", 8, 0)
+  tabCoverage.text = tabCoverage:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+  tabCoverage.text:SetPoint("CENTER"); tabCoverage.text:SetFont(BODY_BOLD_FONT, 13); tabCoverage.text:SetText("Coverage")
   self.sectionTabs = {
-    summary = tabSummary, inventory = tabInventory,
+    summary = tabSummary, inventory = tabInventory, coverage = tabCoverage,
     updateHighlight = function()
-      local activeSummary = self.uiMode == "summary"
-      local sc = activeSummary and COLORS.indicator or COLORS_SUBTLE
-      local ic = activeSummary and COLORS_SUBTLE or COLORS.indicator
-      tabSummary.text:SetTextColor(sc[1], sc[2], sc[3])
-      tabInventory.text:SetTextColor(ic[1], ic[2], ic[3])
+      local tabs = { summary = tabSummary, inventory = tabInventory, coverage = tabCoverage }
+      for mode, tab in pairs(tabs) do
+        local c = self.uiMode == mode and COLORS.indicator or COLORS_SUBTLE
+        tab.text:SetTextColor(c[1], c[2], c[3])
+      end
     end,
   }
   tabSummary:SetScript("OnClick", function() self:ShowSummary() end)
   tabInventory:SetScript("OnClick", function() self:ShowInventory() end)
+  tabCoverage:SetScript("OnClick", function() self:ShowCoverage() end)
   local close = Button(titleBar, "×", 24, function() frame:Hide() end); close:SetPoint("RIGHT", -3, 0)
   local options = Button(titleBar, "Sources", 70, function() self.options:SetShown(not self.options:IsShown()); self:RefreshOptions() end); options:SetPoint("RIGHT", close, "LEFT", -6, 0)
   local history = Button(titleBar, "History", 66, function() self:ToggleHistory() end); history:SetPoint("RIGHT", options, "LEFT", -6, 0)
@@ -761,6 +784,7 @@ function SL:InitializeUI()
   end)
   self:CreateOptions()
   if self.CreateSummary then self:CreateSummary() end
+  if self.CreateCoverageTab then self:CreateCoverageTab() end
   self.uiMode = "inventory"
   self:ApplyUIMode()
   self:RefreshUI()
@@ -804,6 +828,7 @@ function SL:RefreshUI(fromScroll)
   if self.MaybeSnapshot then self:MaybeSnapshot(itemValue, gold) end
   if self.RefreshHistoryPanel then self:RefreshHistoryPanel() end
   if self.RefreshSummary then self:RefreshSummary() end
+  if self.RefreshCoverage then self:RefreshCoverage() end
 end
 
 function SL:ToggleUI()

@@ -504,14 +504,19 @@ end
 
 function SL:ApplyUIMode()
   if not self.frame then return end
-  local isSummary = self.uiMode == "summary"
+  local mode = self.uiMode or "inventory"
+  local isSummary = mode == "summary"
+  local isCoverage = mode == "coverage"
+  local isInventory = mode == "inventory"
   if self.summaryPanel then self.summaryPanel:SetShown(isSummary) end
-  if self.search then self.search:SetShown(not isSummary) end
-  if self.priceEdit then self.priceEdit:SetShown(not isSummary) end
-  if self.headerFrame then self.headerFrame:SetShown(not isSummary) end
-  for _, row in ipairs(self.rows or {}) do row:SetShown(not isSummary) end
-  if self.scroll then self.scroll:SetShown(not isSummary) end
-  if self.summary then self.summary:SetShown(not isSummary) end
+  if self.coveragePanel then self.coveragePanel:SetShown(isCoverage) end
+  if self.search then self.search:SetShown(isInventory) end
+  if self.priceEdit then self.priceEdit:SetShown(isInventory) end
+  if self.headerFrame then self.headerFrame:SetShown(isInventory) end
+  for _, row in ipairs(self.rows or {}) do row:SetShown(isInventory) end
+  if self.scroll then self.scroll:SetShown(isInventory) end
+  if self.summary then self.summary:SetShown(isInventory) end
   if self.sectionTabs then self.sectionTabs.updateHighlight() end
-  if isSummary then self:RefreshSummary() end
+  if isSummary and self.RefreshSummary then self:RefreshSummary() end
+  if isCoverage and self.RefreshCoverage then self:RefreshCoverage() end
 end
