@@ -183,10 +183,11 @@ end
 -- all/none/flip links so bulk edits are one click. Preset chips at the top
 -- cover common shapes ("everything", "current only", "no equipped", etc.).
 
-local MATRIX_PANEL_W = 680
-local MATRIX_ROW_HEADER_W = 240
-local MATRIX_CELL_H = 32
-local MATRIX_HEADER_H = 40
+local MATRIX_PANEL_W = 780
+local MATRIX_PANEL_H = 640
+local MATRIX_ROW_HEADER_W = 300
+local MATRIX_CELL_H = 36
+local MATRIX_HEADER_H = 44
 local MATRIX_SOURCES = {
   { key = "gold", label = "Gold" },
   { key = "bags", label = "Bags" },
@@ -235,14 +236,31 @@ local function MatrixCell(parent, get, set)
 end
 
 function SL:CreateOptions()
-  local frame = CreateFrame("Frame", nil, self.frame, BackdropTemplateMixin and "BackdropTemplate" or nil)
-  frame:SetPoint("TOPRIGHT", self.frame, "TOPRIGHT", -8, -40)
-  frame:SetSize(MATRIX_PANEL_W, 640); frame:SetFrameLevel(self.frame:GetFrameLevel() + 20); Backdrop(frame, 1, COLORS.primary, COLORS.frame); frame:Hide()
-  frame:SetFrameStrata("HIGH"); frame:SetToplevel(true)
+  -- Free-floating top-level window, not parented to the main ledger — user
+  -- can move it, and it survives the main frame closing.
+  local frame = CreateFrame("Frame", "GoblinSourcesFrame", UIParent, BackdropTemplateMixin and "BackdropTemplate" or nil)
+  frame:SetSize(MATRIX_PANEL_W, MATRIX_PANEL_H); Backdrop(frame, 1, COLORS.primary, COLORS.frame); frame:Hide()
+  frame:SetFrameStrata("HIGH"); frame:SetToplevel(true); frame:SetClampedToScreen(true)
+  frame:SetMovable(true); frame:EnableMouse(true)
+  self.db.window.sources = self.db.window.sources or { point = "CENTER", relPoint = "CENTER", x = 40, y = 0 }
+  local saved = self.db.window.sources
+  frame:ClearAllPoints(); frame:SetPoint(saved.point or "CENTER", UIParent, saved.relPoint or "CENTER", saved.x or 40, saved.y or 0)
+  if UISpecialFrames then
+    local already = false
+    for _, name in ipairs(UISpecialFrames) do if name == "GoblinSourcesFrame" then already = true; break end end
+    if not already then table.insert(UISpecialFrames, "GoblinSourcesFrame") end
+  end
   self.options = frame
 
   local titleBar = CreateFrame("Frame", nil, frame, BackdropTemplateMixin and "BackdropTemplate" or nil)
   titleBar:SetPoint("TOPLEFT", 1, -1); titleBar:SetPoint("TOPRIGHT", -1, -1); titleBar:SetHeight(36); Backdrop(titleBar, 1, COLORS.frame, COLORS.frame)
+  titleBar:EnableMouse(true); titleBar:RegisterForDrag("LeftButton")
+  titleBar:SetScript("OnDragStart", function() frame:StartMoving() end)
+  titleBar:SetScript("OnDragStop", function()
+    frame:StopMovingOrSizing()
+    local point, _, relPoint, x, y = frame:GetPoint()
+    self.db.window.sources = { point = point, relPoint = relPoint, x = x, y = y }
+  end)
   local brand = Text(titleBar, "LEFT", 15, true); brand:SetPoint("LEFT", 12, 0); brand:SetText("Goblin")
   SetColor(function(...) brand:SetTextColor(...) end, COLORS.text)
   local section = Text(titleBar, "LEFT", 15, true); section:SetPoint("LEFT", brand, "RIGHT", 8, 0); section:SetText("Sources")
@@ -417,8 +435,13 @@ function SL:BuildCharacterMatrix(parent, characterKeys)
     linkFlip:SetPoint("LEFT", linkNone, "RIGHT", 4, 0)
   end
 
-  -- One row per character
+  -- One row per character. Row header has a strict two-column layout:
+  --   Left column (name/meta) is anchored between (10) and (ROW_HEADER_W - 108)
+  --   Right column (freshness top, bulk links bottom) is fixed 100 wide
+  -- so a long "Character — Realm" cannot bleed into the checkbox area.
   matrix.rows = {}
+  local RIGHT_COL_W = 100
+  local LEFT_RIGHT_EDGE = MATRIX_ROW_HEADER_W - RIGHT_COL_W - 8
   for rowIndex, key in ipairs(characterKeys) do
     local character = self.db.characters[key]
     local row = CreateFrame("Frame", nil, matrix, BackdropTemplateMixin and "BackdropTemplate" or nil)
@@ -427,17 +450,20 @@ function SL:BuildCharacterMatrix(parent, characterKeys)
     local zebra = (rowIndex % 2 == 0) and COLORS.primary or COLORS.primaryAlt
     Backdrop(row, 1, zebra, COLORS.primary)
 
-    -- Row header: name — realm  meta \n  freshness + row-bulk
-    local nameStr = Text(row, "LEFT", 12, true); nameStr:SetPoint("TOPLEFT", 10, -3)
-    nameStr:SetText(character.name or "?"); SetColor(function(...) nameStr:SetTextColor(...) end, COLORS.text)
-    local realmStr = Text(row, "LEFT", 12, true); realmStr:SetPoint("LEFT", nameStr, "RIGHT", 6, 0)
-    realmStr:SetText("— " .. (character.realm or "?")); SetColor(function(...) realmStr:SetTextColor(...) end, COLORS.indicator)
+    -- Left column: name — realm (line 1), guild · class (line 2)
     local class = FormatClass(character.class)
-    local metaLine = Text(row, "LEFT", 10); metaLine:SetPoint("BOTTOMLEFT", 10, 4); metaLine:SetPoint("RIGHT", row, "TOPLEFT", MATRIX_ROW_HEADER_W - 90, 0)
-    local guildBit = character.guildName and string.format("|cff8fb6f0<%s>|r", character.guildName) or "|cff787878no guild|r"
-    metaLine:SetText(string.format("%s  |cff9c9c9c· %s|r", guildBit, class or "?"))
+    local nameFS = Text(row, "LEFT", 12, true)
+    nameFS:SetPoint("TOPLEFT", 10, -4); nameFS:SetPoint("TOPRIGHT", row, "TOPLEFT", LEFT_RIGHT_EDGE, -4)
+    nameFS:SetHeight(14); nameFS:SetWordWrap(false); nameFS:SetJustifyH("LEFT")
+    nameFS:SetText(string.format("|cffffffff%s|r  |cffffd839— %s|r", character.name or "?", character.realm or "?"))
 
-    -- Freshness dot + text
+    local metaFS = Text(row, "LEFT", 10)
+    metaFS:SetPoint("BOTTOMLEFT", 10, 5); metaFS:SetPoint("BOTTOMRIGHT", row, "BOTTOMLEFT", LEFT_RIGHT_EDGE, 5)
+    metaFS:SetHeight(12); metaFS:SetWordWrap(false); metaFS:SetJustifyH("LEFT")
+    local guildBit = character.guildName and string.format("|cff8fb6f0<%s>|r", character.guildName) or "|cff787878no guild|r"
+    metaFS:SetText(string.format("%s  |cff9c9c9c· %s|r", guildBit, class or "?"))
+
+    -- Right column: freshness dot+age (top), bulk links (bottom)
     local newestStamp, newestStatus = nil, nil
     for _, loc in ipairs({ "bags", "bank", "equipped", "mail", "auctions" }) do
       local info = self:GetLocationFreshness(key, loc)
@@ -445,20 +471,28 @@ function SL:BuildCharacterMatrix(parent, characterKeys)
     end
     local goldInfo = self:GetLocationFreshness(key, "gold")
     if goldInfo.stamp and (not newestStamp or goldInfo.stamp > newestStamp) then newestStamp, newestStatus = goldInfo.stamp, goldInfo.status end
-    local dot = row:CreateTexture(nil, "OVERLAY"); dot:SetSize(6, 6); dot:SetTexture("Interface\\Buttons\\WHITE8X8")
-    dot:SetPoint("TOPRIGHT", row, "TOPLEFT", MATRIX_ROW_HEADER_W - 86, -6)
-    local c = COLORS_STALE[newestStatus or "never"]; dot:SetColorTexture(c[1], c[2], c[3], 1)
-    local ageText = Text(row, "LEFT", 10); ageText:SetPoint("LEFT", dot, "RIGHT", 4, 0)
-    ageText:SetText(newestStamp and self:FormatAge(time() - newestStamp) or "never")
-    SetColor(function(...) ageText:SetTextColor(...) end, COLORS_SUBTLE)
 
-    -- Row-bulk links
-    local linkAll = TextLink(row, "all", function() ApplyRowBulk(self, key, "all") end)
-    local linkNone = TextLink(row, "none", function() ApplyRowBulk(self, key, "none") end)
-    local linkFlip = TextLink(row, "flip", function() ApplyRowBulk(self, key, "flip") end)
-    linkAll:SetPoint("BOTTOMRIGHT", row, "TOPLEFT", MATRIX_ROW_HEADER_W - 4, 6)
-    linkNone:SetPoint("RIGHT", linkAll, "LEFT", -4, 0)
-    linkFlip:SetPoint("RIGHT", linkNone, "LEFT", -4, 0)
+    local freshFrame = CreateFrame("Frame", nil, row)
+    freshFrame:SetSize(RIGHT_COL_W, 14)
+    freshFrame:SetPoint("TOPRIGHT", row, "TOPLEFT", MATRIX_ROW_HEADER_W - 8, -4)
+    local dot = freshFrame:CreateTexture(nil, "OVERLAY"); dot:SetSize(6, 6); dot:SetTexture("Interface\\Buttons\\WHITE8X8")
+    dot:SetPoint("LEFT", 0, 0)
+    local c = COLORS_STALE[newestStatus or "never"]; dot:SetColorTexture(c[1], c[2], c[3], 1)
+    local ageText = freshFrame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    ageText:SetPoint("LEFT", dot, "RIGHT", 4, 0); ageText:SetPoint("RIGHT", 0, 0)
+    ageText:SetJustifyH("LEFT")
+    ageText:SetText(newestStamp and (self:FormatAge(time() - newestStamp) .. " ago") or "never")
+    ageText:SetTextColor(COLORS_SUBTLE[1], COLORS_SUBTLE[2], COLORS_SUBTLE[3])
+
+    local bulkFrame = CreateFrame("Frame", nil, row)
+    bulkFrame:SetSize(RIGHT_COL_W, 14)
+    bulkFrame:SetPoint("BOTTOMRIGHT", row, "BOTTOMLEFT", MATRIX_ROW_HEADER_W - 8, 4)
+    local linkAll = TextLink(bulkFrame, "all", function() ApplyRowBulk(self, key, "all") end)
+    local linkNone = TextLink(bulkFrame, "none", function() ApplyRowBulk(self, key, "none") end)
+    local linkFlip = TextLink(bulkFrame, "flip", function() ApplyRowBulk(self, key, "flip") end)
+    linkFlip:SetPoint("RIGHT", 0, 0)
+    linkNone:SetPoint("RIGHT", linkFlip, "LEFT", -4, 0)
+    linkAll:SetPoint("RIGHT", linkNone, "LEFT", -4, 0)
 
     -- Cells
     for i, def in ipairs(MATRIX_SOURCES) do
