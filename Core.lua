@@ -324,13 +324,59 @@ events:SetScript("OnEvent", function(_, event, name)
   end
 end)
 
+function SL:TraceItem(term)
+  term = strlower(strtrim(term or ""))
+  if term == "" then print("|cffffd839Goblin:|r usage: /goblin trace <item name or itemID>"); return end
+  local matches = 0
+  local function nameOf(item)
+    return (item and (item.name or (item.itemID and GetItemInfo(item.itemID)))) or item.itemString or ""
+  end
+  local function match(item) return item and strfind(strlower(nameOf(item)), term, 1, true) end
+  for key, character in pairs(self.db.characters or {}) do
+    for location, items in pairs(character.locations or {}) do
+      for _, item in pairs(items) do
+        if match(item) then
+          matches = matches + 1
+          print(string.format("  |cffababab%s|r %s: %s x%d (bound %d)", key, location, item.link or nameOf(item), item.count or 0, item.boundCount or 0))
+        end
+      end
+    end
+  end
+  for key, guild in pairs(self.db.guilds or {}) do
+    for tab, items in pairs(guild.tabs or {}) do
+      for _, item in pairs(items) do
+        if match(item) then
+          matches = matches + 1
+          local tabName = (guild.tabNames and guild.tabNames[tab]) or ("Tab " .. tab)
+          print(string.format("  |cff8fb6f0<%s>|r %s: %s x%d", guild.name or key, tabName, item.link or nameOf(item), item.count or 0))
+        end
+      end
+    end
+  end
+  for _, record in pairs(self.db.mailTransit or {}) do
+    if record.status == "pending" then
+      for _, item in pairs(record.items or {}) do
+        if match(item) then
+          matches = matches + 1
+          print(string.format("  |cff9fd39fmail-transit|r %s → %s: %s x%d (sent %ds ago)",
+            record.senderName or "?", record.recipientName or "?", item.link or nameOf(item),
+            item.count or 0, time() - (record.sentAt or 0)))
+        end
+      end
+    end
+  end
+  print(string.format("|cffffd839Goblin trace|r for \"%s\": %d source(s)", term, matches))
+end
+
 SLASH_GOBLIN1 = "/goblin"
 SLASH_GOBLIN2 = "/sl"
 SLASH_GOBLIN3 = "/ledger"
 SlashCmdList.GOBLIN = function(msg)
-  msg = strlower(strtrim(msg or ""))
-  if msg == "mail" or msg == "transit" then SL:PrintMailTransitSummary()
-  elseif msg == "stale" or msg == "diag" then
+  msg = strtrim(msg or "")
+  local head, tail = msg:match("^(%S+)%s*(.*)$")
+  head = head and strlower(head) or ""
+  if head == "mail" or head == "transit" then SL:PrintMailTransitSummary()
+  elseif head == "stale" or head == "diag" then
     local stale = SL:GetStaleSources()
     print("|cffffd839Goblin unscanned/stale sources:|r " .. #stale)
     for _, entry in ipairs(stale) do
@@ -340,5 +386,18 @@ SlashCmdList.GOBLIN = function(msg)
         print(string.format("  |cff8fb6f0<%s>|r tab %s — %s", entry.guildName or entry.key, tostring(entry.location), entry.label or entry.status))
       end
     end
+  elseif head == "trace" or head == "find" then SL:TraceItem(tail)
+  elseif head == "rescan" then
+    if GetGuildInfo and GetGuildInfo("player") then
+      print("|cffffd839Goblin:|r wiping stored guild-bank contents and re-querying. Keep the guild bank open.")
+      SL:ForceRescanCurrentGuildBank()
+    else print("|cffffd839Goblin:|r not in a guild.") end
+  elseif head == "help" or head == "?" then
+    print("|cffffd839Goblin commands:|r")
+    print("  /goblin — toggle the ledger")
+    print("  /goblin mail — list in-flight mail shipments")
+    print("  /goblin stale — list unscanned/stale sources")
+    print("  /goblin trace <name> — show every source Goblin has for an item")
+    print("  /goblin rescan — wipe current guild bank cache and re-query")
   else SL:ToggleUI() end
 end

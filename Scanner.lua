@@ -94,10 +94,16 @@ function SL:ScanAuctions()
   self:CommitCharacterLocation("auctions", items)
 end
 
-local function ScanSingleGuildTab(guild, tab)
+-- ScanSingleGuildTab has two modes:
+--   force=true  -- we just queried this tab or the user is viewing it, so any
+--                  empty result is authoritative. Always overwrite.
+--   force=false -- opportunistic scan (e.g. on GUILDBANKFRAME_OPENED before
+--                  queries respond). Empty may just mean "data hasn't arrived
+--                  yet", so preserve any previously-known contents.
+local function ScanSingleGuildTab(guild, tab, force)
   guild.tabNames = guild.tabNames or {}
   local tabName = GetGuildBankTabInfo and GetGuildBankTabInfo(tab)
-  guild.tabNames[tab] = tabName or ("Tab " .. tab)
+  guild.tabNames[tab] = tabName or guild.tabNames[tab] or ("Tab " .. tab)
   local tabItems = NewItemTable()
   local slotCount = MAX_GUILDBANK_SLOTS_PER_TAB or 98
   local seenAny = false
@@ -107,9 +113,7 @@ local function ScanSingleGuildTab(guild, tab)
     if link then seenAny = true end
     AddItem(tabItems, link, count)
   end
-  -- Only overwrite a previously-known tab when we actually saw contents
-  -- (rank-restricted tabs return empty until QueryGuildBankTab succeeds).
-  if seenAny or not guild.tabs[tab] then
+  if force or seenAny or not guild.tabs[tab] then
     guild.tabs[tab] = tabItems
     guild.tabUpdated = guild.tabUpdated or {}
     guild.tabUpdated[tab] = time()
@@ -118,7 +122,14 @@ local function ScanSingleGuildTab(guild, tab)
   return false
 end
 
-function SL:ScanGuildBank()
+local function RebuildGuildAggregate(guild)
+  guild.items = NewItemTable()
+  for _, savedTab in pairs(guild.tabs) do
+    for _, item in pairs(savedTab) do AddItem(guild.items, item.link, item.count) end
+  end
+end
+
+function SL:ScanGuildBank(forceCurrentTab)
   local guildKey = self:GetGuildKey()
   if not guildKey then return end
   local guild = self.db.guilds[guildKey] or { name = GetGuildInfo("player"), realm = GetRealmName(), tabs = {}, tabNames = {} }
@@ -127,17 +138,40 @@ function SL:ScanGuildBank()
   if self.db.settings.guilds[guildKey] == nil then self.db.settings.guilds[guildKey] = true end
   local tabCount = GetNumGuildBankTabs and GetNumGuildBankTabs() or 1
   local changed = false
+  local currentTab = GetCurrentGuildBankTab and GetCurrentGuildBankTab() or nil
   for tab = 1, tabCount do
-    if ScanSingleGuildTab(guild, tab) then changed = true end
+    local force = forceCurrentTab and tab == currentTab
+    if ScanSingleGuildTab(guild, tab, force) then changed = true end
   end
-  guild.items = NewItemTable()
-  for _, savedTab in pairs(guild.tabs) do
-    for _, item in pairs(savedTab) do AddItem(guild.items, item.link, item.count) end
-  end
+  RebuildGuildAggregate(guild)
   guild.gold = GetGuildBankMoney and GetGuildBankMoney() or guild.gold
   guild.goldUpdated = time()
   guild.updated = time()
   if changed and self.RefreshUI then self:RefreshUI() end
+end
+
+-- After a QueryGuildBankTab response has had time to land, scan that specific
+-- tab authoritatively so genuine emptying overwrites stale contents.
+local function DeferredForceScan(tab)
+  local guildKey = SL:GetGuildKey()
+  if not guildKey then return end
+  local guild = SL.db.guilds[guildKey]
+  if not guild then return end
+  local changed = ScanSingleGuildTab(guild, tab, true)
+  if changed then
+    RebuildGuildAggregate(guild)
+    if SL.RefreshUI then SL:RefreshUI() end
+  end
+end
+
+function SL:ForceRescanCurrentGuildBank()
+  local guildKey = self:GetGuildKey()
+  if not guildKey then return end
+  local guild = self.db.guilds[guildKey]
+  if not guild then return end
+  guild.tabs = {}
+  guild.tabUpdated = {}
+  self:RequestAllGuildBankTabs()
 end
 
 function SL:UpdateMoney()
@@ -155,19 +189,17 @@ function SL:RequestAllGuildBankTabs()
   if not QueryGuildBankTab then return end
   local tabCount = GetNumGuildBankTabs and GetNumGuildBankTabs() or 0
   if tabCount == 0 then return end
-  local pending = {}
-  for tab = 1, tabCount do pending[#pending + 1] = tab end
-  local ticker = CreateFrame("Frame")
-  local index = 0
-  ticker:SetScript("OnUpdate", function(self, elapsed)
-    self.acc = (self.acc or 0) + elapsed
-    if self.acc < 0.1 then return end
-    self.acc = 0
-    index = index + 1
-    local nextTab = pending[index]
-    if not nextTab then self:SetScript("OnUpdate", nil); return end
-    pcall(QueryGuildBankTab, nextTab)
-  end)
+  for tab = 1, tabCount do
+    local t = tab
+    if C_Timer and C_Timer.After then
+      C_Timer.After(t * 0.15, function() pcall(QueryGuildBankTab, t) end)
+      -- Wait past the query round-trip, then scan authoritatively so an
+      -- emptied tab actually clears its stored contents.
+      C_Timer.After(t * 0.15 + 0.30, function() DeferredForceScan(t) end)
+    else
+      pcall(QueryGuildBankTab, t)
+    end
+  end
 end
 
 function SL:InitializeScanner()
@@ -185,7 +217,7 @@ function SL:InitializeScanner()
     elseif event == "MAIL_SHOW" or event == "MAIL_INBOX_UPDATE" then self:ScanMail()
     elseif event == "AUCTION_HOUSE_SHOW" or event == "AUCTION_OWNED_LIST_UPDATE" then self:ScanAuctions()
     elseif event == "GUILDBANKFRAME_OPENED" then self:ScanGuildBank(); self:RequestAllGuildBankTabs()
-    elseif event == "GUILDBANKBAGSLOTS_CHANGED" then self:ScanGuildBank()
+    elseif event == "GUILDBANKBAGSLOTS_CHANGED" then self:ScanGuildBank(true)
     elseif event == "PLAYER_GUILD_UPDATE" then self:GetCharacter(); if self.RefreshUI then self:RefreshUI() end end
   end)
 end
