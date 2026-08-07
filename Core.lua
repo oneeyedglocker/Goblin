@@ -365,7 +365,12 @@ function SL:GetCoverageReport()
       local enabled = self:IsCharacterCategoryIncluded(key, loc)
       local src = { name = loc, enabled = enabled, lastScanned = lastScanned, itemCount = itemCount, unpricedCount = unpricedCount }
       row.sources[#row.sources + 1] = src
-      if charEnabled and enabled and not lastScanned then
+      -- Only warn about never-scanned for locations that reliably have
+      -- content on any active character. Auctions/mail/bank stay silent
+      -- when never-scanned because most alts genuinely have none of those
+      -- and the warning was pure noise.
+      local warnOnNever = (loc == "bags" or loc == "equipped")
+      if charEnabled and enabled and not lastScanned and warnOnNever then
         report.warnings[#report.warnings + 1] = string.format("%s: %s never scanned — visit the location once", key, loc)
       elseif itemCount > 0 and (not charEnabled or not enabled) then
         report.warnings[#report.warnings + 1] = string.format("%s: %s has %d item(s) but %s — those won't count",
