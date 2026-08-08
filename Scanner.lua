@@ -70,13 +70,121 @@ function SL:ScanBank()
   self:CommitCharacterLocation("bank", ScanContainers({ BANK_CONTAINER or -1, 5, 6, 7, 8, 9, 10, 11 }))
 end
 
+-- Being equipped is a location; being soulbound is a property of the item.
+-- The two are independent and must never be inferred from each other. Most
+-- gear does bind when you put it on, but anything with no bind rule at all
+-- -- plain white weapons, vendor shirts, a basic fishing pole -- stays
+-- sellable while worn. Marking every equipped slot soulbound hid those from
+-- net worth and inflated the "excluded soulbound" count in the Sources footer.
+--
+-- bindType comes straight from the item: 0 means it never binds, anything
+-- else means wearing it binds it. When the item isn't cached yet bindType is
+-- nil; treat that as bound, which is the conservative reading (it can only
+-- understate net worth, never overstate it) and gets corrected on the next
+-- scan once the client has the data.
+local function IsBoundWhileEquipped(link)
+  if not link then return false end
+  local bindType = select(14, GetItemInfo(link))
+  if bindType == nil then return true end
+  return bindType ~= 0
+end
+
 function SL:ScanEquipped()
   local items = NewItemTable()
   for slot = INVSLOT_FIRST_EQUIPPED or 1, INVSLOT_LAST_EQUIPPED or 19 do
     local link = GetInventoryItemLink("player", slot)
-    AddItem(items, link, link and 1 or 0, true)
+    AddItem(items, link, link and 1 or 0, IsBoundWhileEquipped(link))
   end
   self:CommitCharacterLocation("equipped", items)
+end
+
+-- Auction-generated mail never returns to a sender; it just expires. Detect it
+-- from the localized subject templates so the Mail tab shows the correct
+-- (single-leg) countdown instead of inventing a return date.
+local function AuctionSubjectPrefixes()
+  local function prefix(template)
+    if type(template) ~= "string" then return nil end
+    local p = template:gsub("%%s", ""):gsub("%%d", "")
+    p = p:match("^%s*(.-)%s*$")
+    return p ~= "" and p or nil
+  end
+  return {
+    prefix(_G.AUCTION_EXPIRED_MAIL_SUBJECT),
+    prefix(_G.AUCTION_REMOVED_MAIL_SUBJECT),
+    prefix(_G.AUCTION_SOLD_MAIL_SUBJECT),
+    prefix(_G.AUCTION_OUTBID_MAIL_SUBJECT),
+    prefix(_G.AUCTION_WON_MAIL_SUBJECT),
+  }
+end
+
+local function IsAuctionMail(index, subject)
+  if GetInboxInvoiceInfo then
+    local invoiceType = GetInboxInvoiceInfo(index)
+    if invoiceType and invoiceType ~= "" then return true end
+  end
+  if not subject then return false end
+  for _, p in ipairs(AuctionSubjectPrefixes()) do
+    if p and #p > 0 and subject:sub(1, #p) == p then return true end
+  end
+  return false
+end
+
+-- Full inbox snapshot: one record per message, with the game's own daysLeft
+-- captured alongside the scan timestamp so the Mail tab can project the
+-- countdown forward between mailbox visits.
+function SL:SnapshotInbox()
+  local messages = {}
+  local total = GetInboxNumItems()
+  for index = 1, total do
+    local _, _, sender, subject, money, cod, daysLeft, itemCount, wasRead, wasReturned = GetInboxHeaderInfo(index)
+    local attachments, stacks = {}, 0
+    for slot = 1, attachmentMax do
+      local link = GetInboxItemLink(index, slot)
+      local _, _, _, quantity = GetInboxItem(index, slot)
+      if link and quantity and quantity > 0 then
+        local itemString, itemID = self:NormalizeItem(link)
+        if itemString then
+          local existing = attachments[itemString]
+          if existing then
+            existing.count = existing.count + quantity
+          else
+            attachments[itemString] = {
+              itemString = itemString, itemID = itemID, link = link,
+              name = GetItemInfo(link), count = quantity,
+            }
+            stacks = stacks + 1
+          end
+        end
+      end
+    end
+    local kind
+    if IsAuctionMail(index, subject) then kind = "auction"
+    elseif wasReturned then kind = "returned"
+    else kind = "player" end
+    messages[#messages + 1] = {
+      sender = sender,
+      subject = subject,
+      money = money or 0,
+      cod = cod or 0,
+      -- Negative daysLeft means the mail hasn't landed yet (the one-hour
+      -- delay on text-only player mail); abs() is the time until arrival.
+      daysLeft = tonumber(daysLeft) or 0,
+      pending = (tonumber(daysLeft) or 0) < 0,
+      itemCount = itemCount or 0,
+      stacks = stacks,
+      wasRead = wasRead and true or false,
+      wasReturned = wasReturned and true or false,
+      kind = kind,
+      items = attachments,
+    }
+  end
+  local character = self:GetCharacter()
+  character.mailbox = {
+    scannedAt = time(),
+    messageCount = total,
+    capped = total >= 50,
+    messages = messages,
+  }
 end
 
 function SL:ScanMail()
@@ -89,6 +197,7 @@ function SL:ScanMail()
     end
   end
   self:CommitCharacterLocation("mail", items)
+  self:SnapshotInbox()
   if self.ReconcileMailTransit then self:ReconcileMailTransit() end
   if self.ReconcileAuctionsAgainstMail then self:ReconcileAuctionsAgainstMail() end
 end

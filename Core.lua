@@ -1,7 +1,201 @@
 local ADDON_NAME, SL = ...
 
-SL.VERSION = "0.6.0"
+SL.VERSION = "0.9.0"
+
+-- Shared palette. Every module pulls its local color table from here so the
+-- whole addon retints from one place. Goblin-green chrome, gold accents for
+-- anything money-shaped.
+local function hex(r, g, b) return { r / 255, g / 255, b / 255 } end
+SL.THEME = {
+  bgDeep    = hex(0x0d, 0x13, 0x10),  -- panel background
+  bgPanel   = hex(0x12, 0x1a, 0x15),  -- inset background
+  bgRow     = hex(0x18, 0x23, 0x1c),  -- row fill
+  bgRowAlt  = hex(0x1e, 0x2b, 0x22),  -- alternating row fill
+  chrome    = hex(0x2c, 0x45, 0x35),  -- title bar / footer
+  edge      = hex(0x24, 0x35, 0x2a),  -- hairline borders
+  active    = hex(0x3d, 0x63, 0x49),  -- buttons, controls
+  activeAlt = hex(0xcf, 0xe3, 0xd4),  -- hover wash, scroll thumb
+  text      = { 1, 1, 1 },
+  textAlt   = hex(0xdf, 0xe8, 0xe0),
+  dim       = hex(0x93, 0xa3, 0x96),
+  subtle    = hex(0x6d, 0x7f, 0x72),
+  dimmer    = hex(0x4a, 0x57, 0x4d),
+  gold      = hex(0xff, 0xd8, 0x39),  -- accent / money / active tab
+  green     = hex(0x4e, 0xe0, 0x7f),  -- fresh / healthy
+  goblin    = hex(0x00, 0xfe, 0x00),  -- brand green (title, minimap G)
+  orange    = hex(0xfd, 0x9e, 0x33),  -- stale / warning
+  red       = hex(0xfc, 0x57, 0x57),  -- never / critical
+  blue      = hex(0x8f, 0xb6, 0xf0),  -- guild
+  purple    = hex(0xa6, 0x66, 0xd4),
+}
+
+-- ============================================================================
+-- Theming
+--
+-- Every module aliases SL.THEME's colour tables by reference (COLORS.primary =
+-- T.bgDeep and so on), so a preset switch only has to overwrite the *contents*
+-- of these tables -- never replace them -- for every future read to pick up the
+-- new value. Anything already painted is re-painted from the tint registry
+-- below.
+-- ============================================================================
+
+-- Chrome sets. Accent colours (gold/green/orange/red/blue/purple) are picked
+-- separately so any accent can ride on any chrome.
+SL.THEME_PRESETS = {
+  { key = "goblin", label = "Goblin Green", swatch = hex(0x2c, 0x45, 0x35), colors = {
+      bgDeep = hex(0x0d, 0x13, 0x10), bgPanel = hex(0x12, 0x1a, 0x15), bgRow = hex(0x18, 0x23, 0x1c),
+      bgRowAlt = hex(0x1e, 0x2b, 0x22), chrome = hex(0x2c, 0x45, 0x35), edge = hex(0x24, 0x35, 0x2a),
+      active = hex(0x3d, 0x63, 0x49), activeAlt = hex(0xcf, 0xe3, 0xd4),
+      textAlt = hex(0xdf, 0xe8, 0xe0), dim = hex(0x93, 0xa3, 0x96), subtle = hex(0x6d, 0x7f, 0x72),
+      dimmer = hex(0x4a, 0x57, 0x4d), goblin = hex(0x00, 0xfe, 0x00) } },
+  { key = "midnight", label = "Midnight", swatch = hex(0x2b, 0x33, 0x45), colors = {
+      bgDeep = hex(0x0b, 0x0e, 0x14), bgPanel = hex(0x11, 0x15, 0x1e), bgRow = hex(0x17, 0x1c, 0x27),
+      bgRowAlt = hex(0x1d, 0x23, 0x30), chrome = hex(0x2b, 0x33, 0x45), edge = hex(0x23, 0x2a, 0x39),
+      active = hex(0x3a, 0x45, 0x5e), activeAlt = hex(0xcd, 0xd6, 0xe6),
+      textAlt = hex(0xdd, 0xe3, 0xee), dim = hex(0x93, 0x9c, 0xad), subtle = hex(0x6c, 0x75, 0x86),
+      dimmer = hex(0x48, 0x50, 0x5f), goblin = hex(0x6f, 0xc9, 0xff) } },
+  { key = "slate", label = "Slate", swatch = hex(0x3a, 0x3d, 0x40), colors = {
+      bgDeep = hex(0x0f, 0x10, 0x11), bgPanel = hex(0x16, 0x18, 0x19), bgRow = hex(0x1e, 0x20, 0x22),
+      bgRowAlt = hex(0x26, 0x29, 0x2b), chrome = hex(0x3a, 0x3d, 0x40), edge = hex(0x2e, 0x31, 0x33),
+      active = hex(0x4c, 0x50, 0x54), activeAlt = hex(0xd8, 0xda, 0xdc),
+      textAlt = hex(0xe2, 0xe4, 0xe5), dim = hex(0x9c, 0x9f, 0xa1), subtle = hex(0x74, 0x77, 0x79),
+      dimmer = hex(0x4e, 0x51, 0x53), goblin = hex(0xc8, 0xcc, 0xd0) } },
+  { key = "obsidian", label = "Obsidian", swatch = hex(0x1c, 0x1c, 0x1e), colors = {
+      bgDeep = hex(0x07, 0x07, 0x08), bgPanel = hex(0x0d, 0x0d, 0x0e), bgRow = hex(0x14, 0x14, 0x16),
+      bgRowAlt = hex(0x1a, 0x1a, 0x1d), chrome = hex(0x1c, 0x1c, 0x1e), edge = hex(0x27, 0x27, 0x2a),
+      active = hex(0x33, 0x33, 0x37), activeAlt = hex(0xd0, 0xd0, 0xd4),
+      textAlt = hex(0xe6, 0xe6, 0xe8), dim = hex(0x96, 0x96, 0x9a), subtle = hex(0x6e, 0x6e, 0x72),
+      dimmer = hex(0x47, 0x47, 0x4b), goblin = hex(0x00, 0xfe, 0x00) } },
+  { key = "copper", label = "Copper", swatch = hex(0x4a, 0x34, 0x24), colors = {
+      bgDeep = hex(0x13, 0x0e, 0x0a), bgPanel = hex(0x1b, 0x14, 0x0f), bgRow = hex(0x24, 0x1b, 0x14),
+      bgRowAlt = hex(0x2d, 0x22, 0x19), chrome = hex(0x4a, 0x34, 0x24), edge = hex(0x38, 0x28, 0x1c),
+      active = hex(0x6a, 0x4a, 0x33), activeAlt = hex(0xe6, 0xd6, 0xc6),
+      textAlt = hex(0xef, 0xe3, 0xd8), dim = hex(0xa8, 0x99, 0x8b), subtle = hex(0x80, 0x71, 0x64),
+      dimmer = hex(0x57, 0x4a, 0x3f), goblin = hex(0xff, 0xb4, 0x50) } },
+}
+
+SL.ACCENTS = {
+  { key = "gold",   label = "Gold",   color = hex(0xff, 0xd8, 0x39) },
+  { key = "green",  label = "Green",  color = hex(0x4e, 0xe0, 0x7f) },
+  { key = "blue",   label = "Blue",   color = hex(0x6f, 0xb2, 0xff) },
+  { key = "purple", label = "Purple", color = hex(0xb9, 0x7c, 0xf0) },
+  { key = "teal",   label = "Teal",   color = hex(0x3f, 0xd4, 0xc4) },
+  { key = "rose",   label = "Rose",   color = hex(0xff, 0x7d, 0x9c) },
+  { key = "orange", label = "Orange", color = hex(0xfd, 0x9e, 0x33) },
+  { key = "silver", label = "Silver", color = hex(0xd4, 0xd8, 0xdd) },
+}
+
+-- Tint registry. Every module's SetColor() helper hands its setter closure here
+-- so a preset switch can re-run it against the mutated colour table. Panels
+-- that throw their widgets away and rebuild on every refresh (Sources,
+-- Coverage, Mail) suspend collection while they rebuild -- otherwise the
+-- registry would grow without bound -- and simply get refreshed after a
+-- theme change instead.
+SL.tints = {}
+SL.collectTints = true
+local TINT_CAP = 6000
+
+function SL.RegisterTint(setter, color, alpha)
+  if not SL.collectTints then return end
+  local list = SL.tints
+  if #list >= TINT_CAP then return end
+  list[#list + 1] = { setter = setter, color = color, alpha = alpha }
+end
+
+-- Run fn with tint collection suspended. Used by the rebuild-on-refresh panels.
+function SL.WithoutTintCollection(fn, ...)
+  local previous = SL.collectTints
+  SL.collectTints = false
+  local ok, err = pcall(fn, ...)
+  SL.collectTints = previous
+  if not ok then error(err, 0) end
+end
+
+local function WriteColor(target, source)
+  if not target or not source then return end
+  target[1], target[2], target[3] = source[1], source[2], source[3]
+end
+
+-- "ffd839" for a THEME colour table, for inline |cff.. escapes in text that
+-- can't be re-tinted through the registry.
+function SL.Hex(color)
+  if not color then return "ffffff" end
+  return string.format("%02x%02x%02x",
+    math.floor(math.min(1, math.max(0, color[1])) * 255 + 0.5),
+    math.floor(math.min(1, math.max(0, color[2])) * 255 + 0.5),
+    math.floor(math.min(1, math.max(0, color[3])) * 255 + 0.5))
+end
+
+function SL:GetAppearance()
+  local settings = self.db and self.db.settings
+  return settings and settings.appearance or {}
+end
+
+function SL:GetPresetByKey(key)
+  for _, preset in ipairs(self.THEME_PRESETS) do
+    if preset.key == key then return preset end
+  end
+  return self.THEME_PRESETS[1]
+end
+
+function SL:GetAccentColor()
+  local appearance = self:GetAppearance()
+  if appearance.accent == "custom" and appearance.accentCustom then
+    return appearance.accentCustom
+  end
+  for _, accent in ipairs(self.ACCENTS) do
+    if accent.key == appearance.accent then return accent.color end
+  end
+  return self.ACCENTS[1].color
+end
+
+-- Opacity and scale don't touch the palette, so they get their own cheap path
+-- rather than re-running the whole tint registry on every tick of a slider drag.
+function SL:ApplyWindowSettings()
+  local appearance = self:GetAppearance()
+  local opacity, scale = appearance.opacity or 1, appearance.scale or 1
+  if self.frame then self.frame:SetAlpha(opacity); self.frame:SetScale(scale) end
+  if self.options then self.options:SetAlpha(opacity); self.options:SetScale(scale) end
+  if self.appearanceFrame then self.appearanceFrame:SetScale(scale) end
+end
+
+-- Rewrite SL.THEME in place from the stored appearance settings, then re-paint
+-- everything the tint registry knows about. Never replaces a colour table.
+function SL:ApplyTheme(skipRefresh)
+  local appearance = self:GetAppearance()
+  local preset = self:GetPresetByKey(appearance.theme)
+  for key, color in pairs(preset.colors) do WriteColor(self.THEME[key], color) end
+  WriteColor(self.THEME.gold, self:GetAccentColor())
+
+  for _, entry in ipairs(self.tints) do
+    pcall(entry.setter, entry.color[1], entry.color[2], entry.color[3], entry.alpha or 1)
+  end
+
+  self:ApplyWindowSettings()
+  if self.RefreshMinimapButton then self:RefreshMinimapButton() end
+  if not skipRefresh and self.RefreshUI then self:RefreshUI() end
+end
+
+-- Mail lifetimes. Player-to-player mail sits in the recipient's inbox for
+-- MAIL_RETURN_DAYS, bounces back to the sender for MAIL_GRACE_DAYS more, then
+-- is destroyed. Auction-house and already-returned mail has no return leg --
+-- its countdown runs straight to deletion.
+SL.MAIL_RETURN_DAYS = 30
+SL.MAIL_GRACE_DAYS = 30
+SL.MAIL_URGENT_DAYS = 7
+
 SL.CATEGORIES = { "bags", "bank", "equipped", "mail", "auctions", "guild" }
+-- What a character's sources default to before the user has touched the
+-- Sources matrix. Equipped is off because most worn gear is soulbound and
+-- can't be sold, so counting it inflates a "what am I worth" number.
+--
+-- This used to be enforced by a second, invisible switch (settings.categories)
+-- that BuildLedger checked in addition to the matrix. Nothing ever wrote to
+-- it, so ticking "Equip" could never actually turn equipped on -- and because
+-- the Summary tab only ever checked the matrix, the two tabs disagreed. The
+-- matrix is now the only switch for character sources, and this table is
+-- merely its starting position.
+SL.DEFAULT_SOURCES = { bags = true, bank = true, equipped = false, mail = true, auctions = true }
 SL.CATEGORY_LABELS = {
   bags = "Bags", bank = "Bank", equipped = "Equipped", mail = "Mail",
   auctions = "Auctions", guild = "Guild",
@@ -21,6 +215,10 @@ local DEFAULTS = {
     includeGold = true,
     includeGuildGold = false,
     includeSoulbound = false,
+    -- Only `guild` is still read -- it's the master switch for guild banks.
+    -- The per-character entries are vestigial; character sources are governed
+    -- by the Sources matrix (characterCategories) and seeded from
+    -- SL.DEFAULT_SOURCES. Kept so old SavedVariables load unchanged.
     categories = { bags = true, bank = true, equipped = false, mail = true, auctions = true, guild = true },
     characters = {},
     characterCategories = {},
@@ -30,6 +228,15 @@ local DEFAULTS = {
     guildGold = {},
     sort = "value",
     descending = true,
+    appearance = {
+      theme = "goblin",
+      accent = "gold",
+      accentCustom = nil,
+      opacity = 1,
+      scale = 1,
+      stripes = true,
+      minimap = { shown = true, style = "coin", size = 30, radius = 5, locked = false, angle = -75, letter = true },
+    },
   },
   characters = {},
   guilds = {},
@@ -87,7 +294,9 @@ end
 
 function SL:IsCharacterCategoryIncluded(characterKey, category)
   local settings = self.db.settings.characterCategories[characterKey]
-  return not settings or settings[category] ~= false
+  local value = settings and settings[category]
+  if value == nil then return self.DEFAULT_SOURCES[category] ~= false end
+  return value ~= false
 end
 
 function SL:IsCharacterGoldIncluded(characterKey)
@@ -152,14 +361,14 @@ function SL:GetStaleSources()
         if location ~= "guild" and self:IsCharacterCategoryIncluded(key, location) then
           local info = self:GetLocationFreshness(key, location)
           if info.status ~= "fresh" then
-            out[#out + 1] = { kind = "character", key = key, location = location, status = info.status, label = info.label, name = character.name, realm = character.realm }
+            out[#out + 1] = { kind = "character", key = key, location = location, status = info.status, label = info.label, age = info.age, name = character.name, realm = character.realm }
           end
         end
       end
       if self:IsCharacterGoldIncluded(key) then
         local info = self:GetLocationFreshness(key, "gold")
         if info.status ~= "fresh" then
-          out[#out + 1] = { kind = "character", key = key, location = "gold", status = info.status, label = info.label, name = character.name, realm = character.realm }
+          out[#out + 1] = { kind = "character", key = key, location = "gold", status = info.status, label = info.label, age = info.age, name = character.name, realm = character.realm }
         end
       end
     end
@@ -185,6 +394,13 @@ function SL:GetStaleSources()
       end
     end
   end
+  -- Never-scanned first, then oldest, so the summary widget's short list is
+  -- the list that actually needs attention.
+  table.sort(out, function(a, b)
+    local aNever, bNever = a.status == "never", b.status == "never"
+    if aNever ~= bNever then return aNever end
+    return (a.age or math.huge) > (b.age or math.huge)
+  end)
   return out
 end
 
@@ -210,6 +426,13 @@ function SL:ValidatePriceSource(source)
   return valid, err
 end
 
+-- 43865 -> "43,865". Big raw counts are unreadable without separators.
+function SL.CommaNumber(value)
+  local text = tostring(math.floor(tonumber(value) or 0))
+  local out = text:reverse():gsub("(%d%d%d)", "%1,"):reverse()
+  return (out:gsub("^,", ""))
+end
+
 function SL:FormatMoney(copper)
   copper = math.floor(tonumber(copper) or 0)
   if TSM_API and TSM_API.FormatMoneyString then
@@ -229,11 +452,104 @@ function SL:GetPriceSources()
   return result
 end
 
+-- Fingerprint of every setting that changes the net-worth total. History
+-- snapshots record this so the trend widgets only ever compare two totals that
+-- were computed from the same source selection -- toggling a guild bank off
+-- used to look like an overnight crash.
+-- How much is being held back by the soulbound switch. Reported in the Sources
+-- footer so "why is my net worth lower than TSM's" has a visible answer.
+function SL:GetSoulboundExcluded()
+  local stacks, units = 0, 0
+  local function scan(items)
+    for _, item in pairs(items or {}) do
+      local bound = item.boundCount or 0
+      if bound > 0 then stacks = stacks + 1; units = units + bound end
+    end
+  end
+  for key, character in pairs(self.db.characters or {}) do
+    if self:IsCharacterIncluded(key) then
+      for _, location in ipairs({ "bags", "bank", "equipped", "mail", "auctions" }) do
+        if self:IsCharacterCategoryIncluded(key, location) then
+          scan((character.locations or {})[location])
+        end
+      end
+    end
+  end
+  if self.db.settings.categories.guild then
+    for gkey, guild in pairs(self.db.guilds or {}) do
+      if self:IsGuildIncluded(gkey) then
+        for tab, items in pairs(guild.tabs or {}) do
+          if self:IsGuildTabIncluded(gkey, tab) then scan(items) end
+        end
+      end
+    end
+  end
+  return stacks, units
+end
+
+function SL:GetConfigFingerprint()
+  local settings = self.db.settings
+  local parts = {
+    settings.priceSource or "?",
+    settings.includeGold and "G1" or "G0",
+    settings.includeGuildGold and "GG1" or "GG0",
+    settings.includeSoulbound and "SB1" or "SB0",
+  }
+  -- Only guild is still a real switch here; the per-character locations are
+  -- fingerprinted from the Sources matrix further down. Hashing the vestigial
+  -- entries would just be hashing constants.
+  parts[#parts + 1] = "guild" .. (settings.categories.guild and "1" or "0")
+  local characterKeys = {}
+  for key in pairs(self.db.characters or {}) do characterKeys[#characterKeys + 1] = key end
+  table.sort(characterKeys)
+  for _, key in ipairs(characterKeys) do
+    local bits = { self:IsCharacterIncluded(key) and "1" or "0", self:IsCharacterGoldIncluded(key) and "1" or "0" }
+    for _, location in ipairs({ "bags", "bank", "equipped", "mail", "auctions" }) do
+      bits[#bits + 1] = self:IsCharacterCategoryIncluded(key, location) and "1" or "0"
+    end
+    parts[#parts + 1] = key .. ":" .. table.concat(bits)
+  end
+  local guildKeys = {}
+  for key in pairs(self.db.guilds or {}) do guildKeys[#guildKeys + 1] = key end
+  table.sort(guildKeys)
+  for _, key in ipairs(guildKeys) do
+    local bits = { self:IsGuildIncluded(key) and "1" or "0", self:IsGuildGoldIncluded(key) and "1" or "0" }
+    local tabs = {}
+    for tab in pairs((self.db.guilds[key] or {}).tabs or {}) do tabs[#tabs + 1] = tab end
+    table.sort(tabs)
+    for _, tab in ipairs(tabs) do bits[#bits + 1] = self:IsGuildTabIncluded(key, tab) and "1" or "0" end
+    parts[#parts + 1] = key .. ":" .. table.concat(bits)
+  end
+  -- djb2. Only used for change detection, so collision resistance is a
+  -- non-issue and a 32-bit rolling hash stays well inside double precision.
+  local joined = table.concat(parts, "|")
+  local hash = 5381
+  for i = 1, #joined do hash = (hash * 33 + joined:byte(i)) % 4294967296 end
+  return hash
+end
+
+-- True once TSM has answered at least one price query. Snapshots taken before
+-- this would record a near-zero net worth and poison the trend line.
+function SL:IsPricingReady()
+  if not TSM_API or not TSM_API.GetCustomPriceValue then return false end
+  local valid = self:ValidatePriceSource(self.db.settings.priceSource)
+  return valid and true or false
+end
+
+-- Returns rows, filteredValue, gold, unfilteredValue.
+--
+-- filteredValue only counts rows matching the search box; unfilteredValue is
+-- the true item value of every included source. History snapshots MUST use the
+-- unfiltered figure -- recording the filtered one meant that leaving a word in
+-- the search box while the ledger refreshed wrote a near-zero net worth into
+-- the trend line.
 function SL:BuildLedger(filter)
-  local result, totalValue, totalGold = {}, 0, 0
+  local result, totalValue, totalGold, grandValue = {}, 0, 0, 0
   filter = strlower(strtrim(filter or ""))
+  -- Gating is the caller's job: character locations are gated by the Sources
+  -- matrix, guild tabs by the guild switches. There is deliberately no second
+  -- global check here any more.
   local function Add(location, items)
-    if not self.db.settings.categories[location] then return end
     for itemString, item in pairs(items or {}) do
       local count = item.count or 0
       if not self.db.settings.includeSoulbound then
@@ -284,9 +600,10 @@ function SL:BuildLedger(filter)
   local rows = {}
   for _, row in pairs(result) do
     row.name = row.name or (row.itemID and GetItemInfo(row.itemID)) or row.itemString
+    row.unitPrice = self:GetPrice(row.itemString) or 0
+    row.value = row.unitPrice * row.total
+    grandValue = grandValue + row.value
     if filter == "" or strfind(strlower(row.name or ""), filter, 1, true) then
-      row.unitPrice = self:GetPrice(row.itemString) or 0
-      row.value = row.unitPrice * row.total
       totalValue = totalValue + row.value
       rows[#rows + 1] = row
     end
@@ -298,7 +615,79 @@ function SL:BuildLedger(filter)
     if av == bv then return (a.name or "") < (b.name or "") end
     if descending then return av > bv else return av < bv end
   end)
-  return rows, totalValue, totalGold
+  return rows, totalValue, totalGold, grandValue
+end
+
+-- Every distinct item TSM has no price for, with where it lives and how many
+-- there are. The Summary tile says "1 with no price" and used to leave you no
+-- way to find out which item that was.
+function SL:GetUnpricedItems()
+  local out, index = {}, {}
+  local function note(itemString, item, where, count)
+    if count <= 0 then return end
+    local row = index[itemString]
+    if not row then
+      row = { itemString = itemString, itemID = item.itemID, link = item.link,
+              name = item.name, count = 0, places = {} }
+      index[itemString] = row
+      out[#out + 1] = row
+    end
+    row.count = row.count + count
+    row.name = row.name or item.name
+    row.link = row.link or item.link
+    row.places[#row.places + 1] = string.format("%s (%d)", where, count)
+  end
+  local function scan(items, where)
+    for itemString, item in pairs(items or {}) do
+      local count = item.count or 0
+      if not self.db.settings.includeSoulbound then
+        count = math.max(0, count - (item.boundCount or 0))
+      end
+      if count > 0 and (self:GetPrice(itemString) or 0) == 0 then
+        note(itemString, item, where, count)
+      end
+    end
+  end
+  for key, character in pairs(self.db.characters or {}) do
+    if self:IsCharacterIncluded(key) then
+      for _, location in ipairs({ "bags", "bank", "equipped", "mail", "auctions" }) do
+        if self:IsCharacterCategoryIncluded(key, location) then
+          scan((character.locations or {})[location], string.format("%s %s", character.name or key, location))
+        end
+      end
+    end
+  end
+  if self.db.settings.categories.guild then
+    for gkey, guild in pairs(self.db.guilds or {}) do
+      if self:IsGuildIncluded(gkey) then
+        for tab, items in pairs(guild.tabs or {}) do
+          if self:IsGuildTabIncluded(gkey, tab) then
+            scan(items, string.format("<%s> tab %s", guild.name or gkey, tostring(tab)))
+          end
+        end
+      end
+    end
+  end
+  for _, row in ipairs(out) do
+    row.name = row.name or (row.itemID and GetItemInfo(row.itemID)) or row.itemString
+  end
+  table.sort(out, function(a, b) return a.count > b.count end)
+  return out
+end
+
+function SL:PrintUnpricedItems()
+  local rows = self:GetUnpricedItems()
+  if #rows == 0 then
+    print("|cffffd839Goblin:|r every counted item has a price under |cffffffff" .. tostring(self.db.settings.priceSource) .. "|r.")
+    return
+  end
+  print(string.format("|cffffd839Goblin — %d item type%s with no %s price:|r",
+    #rows, #rows == 1 and "" or "s", tostring(self.db.settings.priceSource)))
+  for _, row in ipairs(rows) do
+    print(string.format("  %s |cff9c9c9cx%d|r — %s", row.link or row.name or row.itemString,
+      row.count, table.concat(row.places, ", ")))
+  end
+  print("|cffababab  usually vendor trash, quest/conjured items, or something the AH has never seen.|r")
 end
 
 local events = CreateFrame("Frame")
@@ -309,6 +698,17 @@ events:SetScript("OnEvent", function(_, event, name)
     GoblinDB = GoblinDB or {}
     CopyDefaults(DEFAULTS, GoblinDB)
     SL.db = GoblinDB
+    -- Minimap settings used to live under db.window.minimap. Fold anything
+    -- found there into settings.appearance.minimap once, then leave the old
+    -- table alone so downgrading doesn't lose the icon position.
+    local legacy = GoblinDB.window and GoblinDB.window.minimap
+    if legacy and not GoblinDB.settings.appearance.minimapMigrated then
+      local target = GoblinDB.settings.appearance.minimap
+      if legacy.angle then target.angle = legacy.angle end
+      if legacy.hidden ~= nil then target.shown = not legacy.hidden end
+      GoblinDB.settings.appearance.minimapMigrated = true
+    end
+    SL:ApplyTheme(true)
   elseif event == "PLAYER_LOGIN" then
     SL:GetCharacter()
     SL:InitializeScanner()
@@ -318,9 +718,15 @@ events:SetScript("OnEvent", function(_, event, name)
       print("|cffff5555Goblin UI error:|r " .. tostring(uiError))
     end
     if SL.CreateMinimapButton then pcall(function() SL:CreateMinimapButton() end) end
+    pcall(function() SL:ApplyTheme(true) end)
     SL:ScanBags()
     SL:ScanEquipped()
     SL:UpdateMoney()
+    -- Item data may not be cached the instant we log in, and bind state is
+    -- read from it. Re-scan once the client has had a moment to fill in.
+    if C_Timer and C_Timer.After then
+      C_Timer.After(5, function() pcall(function() SL:ScanEquipped() end) end)
+    end
   end
 end)
 
@@ -570,7 +976,9 @@ SlashCmdList.GOBLIN = function(msg)
   msg = strtrim(msg or "")
   local head, tail = msg:match("^(%S+)%s*(.*)$")
   head = head and strlower(head) or ""
-  if head == "mail" or head == "transit" then SL:PrintMailTransitSummary()
+  if head == "mail" then
+    if strlower(tail or "") == "transit" then SL:PrintMailTransitSummary() else SL:PrintMailReport() end
+  elseif head == "transit" then SL:PrintMailTransitSummary()
   elseif head == "stale" or head == "diag" then
     local stale = SL:GetStaleSources()
     print("|cffffd839Goblin unscanned/stale sources:|r " .. #stale)
@@ -605,6 +1013,15 @@ SlashCmdList.GOBLIN = function(msg)
   elseif head == "diff" or head == "tsm" then
     local a, b = tail:match("^(%S*)%s*(%S*)$")
     SL:PrintTSMDiff(a ~= "" and a or nil, b ~= "" and b or nil)
+  elseif head == "unpriced" or head == "noprice" then SL:PrintUnpricedItems()
+  elseif head == "appearance" or head == "config" or head == "options" then
+    if SL.ToggleAppearance then SL:ToggleAppearance() end
+  elseif head == "history" then
+    local sub = strlower(tail or "")
+    if sub == "reset" then SL:ResetHistory()
+    elseif sub == "prune" then SL:PruneHistory()
+    elseif sub == "why" then SL:ExplainTrend()
+    else print("|cffffd839Goblin:|r history reset | prune | why") end
   elseif head == "rescan" then
     if GetGuildInfo and GetGuildInfo("player") then
       print("|cffffd839Goblin:|r wiping stored guild-bank contents and re-querying. Keep the guild bank open.")
@@ -614,12 +1031,18 @@ SlashCmdList.GOBLIN = function(msg)
     print("|cffffd839Goblin commands:|r")
     print("  /goblin — toggle the ledger")
     print("  /goblin net — print current net worth")
-    print("  /goblin mail — list in-flight mail shipments")
+    print("  /goblin mail — every tracked mail, where it sits, and its expiry clocks")
+    print("  /goblin mail transit — only shipments Goblin hooked but hasn't confirmed")
     print("  /goblin stale — list unscanned/stale sources")
     print("  /goblin trace <name> — show every source Goblin has for an item")
     print("  /goblin coverage — per-character/guild source scan status and warnings")
     print("  /goblin coverage all — same but also lists fresh, priced sources")
     print("  /goblin diff [threshold] — per-item Goblin vs TSM NumInventory diff (default threshold 0)")
+    print("  /goblin unpriced — every item TSM has no price for, and where it lives")
+    print("  /goblin appearance — theme, accent, minimap icon and window options")
+    print("  /goblin history why — explain exactly what the 7-day trend is comparing")
+    print("  /goblin history prune — drop snapshots taken under a different source selection")
+    print("  /goblin history reset — clear the net-worth trend line and start fresh")
     print("  /goblin rescan — wipe current guild bank cache and re-query")
   else SL:ToggleUI() end
 end

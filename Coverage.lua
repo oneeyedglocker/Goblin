@@ -4,24 +4,26 @@ local _, SL = ...
 -- guild is a compact row showing per-source status pills (item count,
 -- unpriced count, last-scan age, disabled flag). Warnings section at bottom.
 
-local COL_PRIMARY   = { 0x14/255, 0x16/255, 0x16/255 }
-local COL_ALT       = { 0x1c/255, 0x20/255, 0x20/255 }
-local COL_EDGE      = { 0x2a/255, 0x2f/255, 0x31/255 }
-local COL_TEXT      = { 1, 1, 1 }
-local COL_DIM       = { 0x93/255, 0x99/255, 0x9a/255 }
-local COL_SUBTLE    = { 0.58, 0.63, 0.61 }
-local COL_YELLOW    = { 1.00, 0.85, 0.22 }
-local COL_GREEN     = { 0.30, 0.86, 0.50 }
-local COL_ORANGE    = { 0.99, 0.62, 0.20 }
-local COL_RED       = { 0.99, 0.34, 0.34 }
-local COL_GUILD     = { 0.55, 0.72, 0.92 }
-local COL_DIMMER    = { 0.42, 0.44, 0.44 }
+local T = SL.THEME
+local COL_PRIMARY   = T.bgDeep
+local COL_ALT       = T.bgRow
+local COL_EDGE      = T.edge
+local COL_TEXT      = T.text
+local COL_DIM       = T.dim
+local COL_SUBTLE    = T.subtle
+local COL_YELLOW    = T.gold
+local COL_GREEN     = T.green
+local COL_ORANGE    = T.orange
+local COL_RED       = T.red
+local COL_GUILD     = T.blue
+local COL_DIMMER    = T.dimmer
 
 local BODY_FONT      = "Interface\\AddOns\\TradeSkillMaster\\Media\\Montserrat-Regular.ttf"
 local BODY_BOLD_FONT = "Interface\\AddOns\\TradeSkillMaster\\Media\\Montserrat-Bold.ttf"
 
 local function SetColor(target, color, alpha)
   target(color[1], color[2], color[3], alpha or 1)
+  SL.RegisterTint(target, color, alpha)
 end
 
 local function Backdrop(frame, alpha, background, border)
@@ -46,6 +48,13 @@ local SOURCE_LABEL = { gold = "Gold", bags = "Bags", bank = "Bank", equipped = "
 -- Pill widget: one per source in a character row. Colored dot + label + counts.
 -- Label is anchored on BOTH sides so text truncates at the pill edge instead
 -- of bleeding into the next pill.
+-- Pill widget: one per source in a character row. Colored dot + label + counts.
+-- Label is anchored on BOTH sides so text truncates at the pill edge instead
+-- of bleeding into the next pill.
+--
+-- Counts are spelled out. The old build rendered "6i · 1u", which nobody could
+-- decode, and the gold pill fed a copper amount through the same "%di"
+-- formatter and printed things like "1793741i".
 local function BuildSourcePill(parent, source, info, disabled, labelOverride)
   local pill = CreateFrame("Frame", nil, parent)
   pill:SetHeight(20)
@@ -66,17 +75,22 @@ local function BuildSourcePill(parent, source, info, disabled, labelOverride)
   local label = Text(pill, "LEFT", 11, true, disabled and COL_DIMMER or COL_TEXT)
   label:SetPoint("LEFT", dot, "RIGHT", 6, 0); label:SetPoint("RIGHT", -4, 0)
   label:SetJustifyH("LEFT"); label:SetWordWrap(false); label:SetHeight(14)
-  local ageStr = info and info.lastScanned and SL:FormatAge(time() - info.lastScanned) or "never"
+  local ageStr = info and info.lastScanned and SL:FormatAge(time() - info.lastScanned) or "never scanned"
   local sourceLabel = labelOverride or SOURCE_LABEL[source] or source
   local countStr
-  if not info or not info.lastScanned then
-    countStr = "never"
+  if source == "gold" then
+    -- Gold is an amount, not a pile of item types.
+    countStr = info and info.lastScanned
+      and string.format("%s · %s", SL:FormatMoney(info.amount or 0), ageStr)
+      or "never scanned"
+  elseif not info or not info.lastScanned then
+    countStr = "never scanned"
   elseif not info.itemCount or info.itemCount == 0 then
     countStr = "empty · " .. ageStr
   elseif info.unpricedCount and info.unpricedCount > 0 then
-    countStr = string.format("%di · |cffff9d33%du|r · %s", info.itemCount, info.unpricedCount, ageStr)
+    countStr = string.format("%d items · |cffff9d33%d no price|r · %s", info.itemCount, info.unpricedCount, ageStr)
   else
-    countStr = string.format("%di · %s", info.itemCount, ageStr)
+    countStr = string.format("%d items · %s", info.itemCount, ageStr)
   end
   local disabledSuffix = disabled and " |cff787878off|r" or ""
   label:SetText(string.format("%s  %s%s", sourceLabel, countStr, disabledSuffix))
@@ -89,16 +103,16 @@ local function BuildCharacterRow(parent, char, sourceMap, rowWidth)
   Backdrop(row, 1, COL_ALT, COL_EDGE)
   row:SetHeight(78)
 
+  -- The character's gold used to be repeated on the right of this line. It is
+  -- already the first pill below, so the duplicate is gone and the name gets
+  -- the full row width.
   local nameStr = Text(row, "LEFT", 12, true, COL_TEXT)
-  nameStr:SetPoint("TOPLEFT", 10, -6); nameStr:SetPoint("TOPRIGHT", -180, -6); nameStr:SetHeight(14); nameStr:SetWordWrap(false)
+  nameStr:SetPoint("TOPLEFT", 10, -6); nameStr:SetPoint("TOPRIGHT", -10, -6); nameStr:SetHeight(14); nameStr:SetWordWrap(false)
   local realmSuffix = char.realm and (" |cffffd839— " .. char.realm .. "|r") or ""
   local disabledTag = char.enabled == false and " |cff787878DISABLED|r" or ""
   nameStr:SetText(string.format("|cffffffff%s|r%s%s", char.name or char.key, realmSuffix, disabledTag))
 
   local goldInfo = char.gold and SL:GetLocationFreshness(char.key, "gold") or nil
-  local goldStr = Text(row, "RIGHT", 11, false, COL_DIM)
-  goldStr:SetPoint("TOPRIGHT", -10, -6); goldStr:SetWidth(170); goldStr:SetHeight(14); goldStr:SetWordWrap(false)
-  goldStr:SetText(string.format("gold %s · %s", SL:FormatMoney(char.gold and char.gold.amount or 0), goldInfo and goldInfo.stamp and SL:FormatAge(time() - goldInfo.stamp) or "never"))
 
   -- 6 pills laid out as 2 rows × 3 columns. Each pill is a real fraction of
   -- the row width with a small gap; label truncates at pill boundary.
@@ -113,7 +127,9 @@ local function BuildCharacterRow(parent, char, sourceMap, rowWidth)
     local y = -28 - ro * 22
     local info, disabled
     if s == "gold" then
-      info = { itemCount = char.gold and char.gold.amount or 0, lastScanned = char.gold and char.gold.updatedAt, unpricedCount = 0, status = goldInfo and goldInfo.status or "never" }
+      info = { amount = char.gold and char.gold.amount or 0, itemCount = 0,
+               lastScanned = char.gold and char.gold.updatedAt, unpricedCount = 0,
+               status = goldInfo and goldInfo.status or "never" }
       disabled = not (char.gold and char.gold.enabled)
     else
       info = sourceMap[s]
@@ -138,8 +154,8 @@ local function BuildGuildRow(parent, guild, rowWidth)
   nameStr:SetText(string.format("|cff8fb6f0<%s>|r%s", guild.name or guild.key, disabledTag))
 
   local goldStr = Text(row, "RIGHT", 11, false, COL_DIM)
-  goldStr:SetPoint("TOPRIGHT", -10, -6); goldStr:SetWidth(170); goldStr:SetHeight(14); goldStr:SetWordWrap(false)
-  local goldAge = guild.gold and guild.gold.updatedAt and SL:FormatAge(time() - guild.gold.updatedAt) or "never"
+  goldStr:SetPoint("TOPRIGHT", -10, -6); goldStr:SetWidth(200); goldStr:SetHeight(14); goldStr:SetWordWrap(false)
+  local goldAge = guild.gold and guild.gold.updatedAt and SL:FormatAge(time() - guild.gold.updatedAt) or "never scanned"
   goldStr:SetText(string.format("guild gold %s · %s", SL:FormatMoney(guild.gold and guild.gold.amount or 0), goldAge))
 
   local usable = (rowWidth or 720) - 20
@@ -187,7 +203,7 @@ function SL:CreateCoverageTab()
 
   local hint = Text(panel, "RIGHT", 11, false, COL_SUBTLE)
   hint:SetPoint("TOPRIGHT", -12, -10); hint:SetHeight(14); hint:SetWordWrap(false)
-  hint:SetText("green fresh · orange stale · red never · off disabled")
+  hint:SetText("dot: green current · orange stale · red never scanned   ·   \"off\" = excluded in Sources")
   panel.hint = hint
 
   local scroll = CreateFrame("ScrollFrame", nil, panel, "UIPanelScrollFrameTemplate")
@@ -203,7 +219,14 @@ function SL:CreateCoverageTab()
   return panel
 end
 
+-- Coverage throws away and rebuilds every row on each refresh, so its colour
+-- setters must not accumulate in the theme tint registry. A theme change
+-- refreshes the tab instead, which rebuilds the rows from the new palette.
 function SL:RefreshCoverage()
+  SL.WithoutTintCollection(function() self:RefreshCoverageImpl() end)
+end
+
+function SL:RefreshCoverageImpl()
   local panel = self.coveragePanel
   if not panel or not panel:IsShown() then return end
   local report = self:GetCoverageReport()

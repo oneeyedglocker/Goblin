@@ -1,16 +1,18 @@
 local _, SL = ...
 
--- TSM's Stormwind theme. Goblin intentionally mirrors the parent addon's
--- visual language while remaining independent of LibTSMUI's private API.
+-- Goblin's own green theme, pulled from SL.THEME so every panel retints from
+-- one table in Core.lua. Layout still mirrors TSM's so the two addons sit
+-- comfortably side by side, but the chrome is green and the accents gold.
+local T = SL.THEME
 local COLORS = {
-  primary = { 0x14 / 255, 0x16 / 255, 0x16 / 255 },
-  primaryAlt = { 0x24 / 255, 0x29 / 255, 0x29 / 255 },
-  frame = { 0x42 / 255, 0x4c / 255, 0x4f / 255 },
-  active = { 0x6b / 255, 0x76 / 255, 0x73 / 255 },
-  activeAlt = { 0xd9 / 255, 0xdc / 255, 0xd3 / 255 },
-  indicator = { 0xff / 255, 0xd8 / 255, 0x39 / 255 },
-  text = { 1, 1, 1 },
-  textAlt = { 0xe2 / 255, 0xe2 / 255, 0xe2 / 255 },
+  primary = T.bgDeep,
+  primaryAlt = T.bgPanel,
+  frame = T.chrome,
+  active = T.active,
+  activeAlt = T.activeAlt,
+  indicator = T.gold,
+  text = T.text,
+  textAlt = T.textAlt,
 }
 local BODY_FONT = "Interface\\AddOns\\TradeSkillMaster\\Media\\Montserrat-Regular.ttf"
 local BODY_BOLD_FONT = "Interface\\AddOns\\TradeSkillMaster\\Media\\Montserrat-Bold.ttf"
@@ -30,6 +32,7 @@ local COLUMNS = {
 
 local function SetColor(target, color, alpha)
   target(color[1], color[2], color[3], alpha or 1)
+  SL.RegisterTint(target, color, alpha)
 end
 
 local function Backdrop(frame, alpha, background, border)
@@ -66,6 +69,51 @@ local function Input(parent, width, height)
   edit:SetAutoFocus(false)
   edit:SetTextInsets(6, 6, 0, 0)
   return edit
+end
+
+-- Distribute the window's spare width across the table instead of leaving a
+-- dead zone on the right. Most of the slack goes to the item name, which is
+-- the column that was truncating; the rest goes to Value. Must be called once
+-- at init as well as on resize -- the frame is sized from SavedVariables
+-- before OnSizeChanged is hooked, so a restored wide window never re-laid out.
+function SL:LayoutColumns()
+  if not self.frame or not self.headers or not self.rows then return end
+  local available = self.frame:GetWidth() - 26
+  local base = 0
+  for _, column in ipairs(COLUMNS) do base = base + column.width end
+  local slack = math.max(0, available - base)
+  local nameShare = math.floor(slack * 0.7)
+
+  local widths, total = {}, 0
+  for _, column in ipairs(COLUMNS) do
+    local width = column.width
+    if column.key == "name" then width = width + nameShare
+    elseif column.key == "value" then width = width + (slack - nameShare) end
+    widths[column.key] = width
+    total = total + width
+  end
+
+  if self.headerFrame then self.headerFrame:SetWidth(total + 8) end
+  local x = 4
+  for _, column in ipairs(COLUMNS) do
+    local button = self.headers[column.key]
+    if button then
+      button:ClearAllPoints(); button:SetPoint("TOPLEFT", x, 0); button:SetSize(widths[column.key], 24)
+    end
+    x = x + widths[column.key]
+  end
+  for _, row in ipairs(self.rows) do
+    row:SetWidth(total + 8)
+    local cellX = 4
+    for _, column in ipairs(COLUMNS) do
+      local cell = row.columns[column.key]
+      if cell then
+        cell:ClearAllPoints(); cell:SetPoint("TOPLEFT", cellX, 0)
+        cell:SetSize(widths[column.key] - 6, ROW_HEIGHT)
+      end
+      cellX = cellX + widths[column.key]
+    end
+  end
 end
 
 function SL:SetSort(key)
@@ -308,12 +356,23 @@ function SL:CreateOptions()
   SetColor(function(...) soul.mark:SetColorTexture(...) end, COLORS.indicator)
   soul:SetCheckedTexture(soul.mark)
   soul:SetChecked(self.db.settings.includeSoulbound and true or false)
-  local soulLabel = Text(presets, "RIGHT", 11); soulLabel:SetPoint("RIGHT", soul, "LEFT", -6, 0); soulLabel:SetText("Include soulbound")
-  SetColor(function(...) soulLabel:SetTextColor(...) end, COLORS_SUBTLE)
+  local soulLabel = Text(presets, "RIGHT", 11, true); soulLabel:SetPoint("RIGHT", soul, "LEFT", -6, 0); soulLabel:SetText("Count soulbound items")
+  SetColor(function(...) soulLabel:SetTextColor(...) end, COLORS.textAlt)
+  local function SoulTooltip(owner)
+    GameTooltip:SetOwner(owner, "ANCHOR_TOP")
+    GameTooltip:AddLine("Count soulbound items")
+    GameTooltip:AddLine("Applies everywhere, not just to equipped gear: soulbound items sitting in bags, bank, mail or a guild bank are excluded too.", 0.8, 0.85, 0.8, true)
+    GameTooltip:AddLine("Off means you only see what you could actually sell.", 0.6, 0.7, 0.62, true)
+    GameTooltip:Show()
+  end
+  soul:SetScript("OnEnter", function(b) SoulTooltip(b) end)
+  soul:SetScript("OnLeave", function() GameTooltip:Hide() end)
+  soulLabel.owner = soul
   soul:SetScript("OnClick", function(s)
     self.db.settings.includeSoulbound = s:GetChecked() and true or false
     self:RefreshUI()
   end)
+  self.soulboundCheck = soul
 
   local scroll = CreateFrame("ScrollFrame", nil, frame, "UIPanelScrollFrameTemplate")
   scroll:SetPoint("TOPLEFT", 4, -116); scroll:SetPoint("BOTTOMRIGHT", -28, 34)
@@ -322,8 +381,9 @@ function SL:CreateOptions()
 
   local footer = CreateFrame("Frame", nil, frame, BackdropTemplateMixin and "BackdropTemplate" or nil)
   footer:SetPoint("BOTTOMLEFT", 1, 1); footer:SetPoint("BOTTOMRIGHT", -1, 1); footer:SetHeight(30); Backdrop(footer, 1, COLORS.frame, COLORS.frame)
-  local footerHint = Text(footer, "LEFT", 11); footerHint:SetPoint("LEFT", 12, 0); footerHint:SetText("Changes update net worth immediately.")
+  local footerHint = Text(footer, "LEFT", 11); footerHint:SetPoint("LEFT", 12, 0); footerHint:SetWidth(420); footerHint:SetWordWrap(false)
   SetColor(function(...) footerHint:SetTextColor(...) end, COLORS_SUBTLE)
+  self.soulboundFooter = footerHint
   local staleText = Text(footer, "RIGHT", 11, true); staleText:SetPoint("RIGHT", -12, 0); self.staleFooter = staleText
   return frame
 end
@@ -586,7 +646,13 @@ function SL:BuildGuildCard(parent, guildKey)
   return card
 end
 
+-- Same as Coverage: the Sources matrix is rebuilt wholesale on every refresh,
+-- so it must not feed the theme tint registry.
 function SL:RefreshOptions()
+  SL.WithoutTintCollection(function() self:RefreshOptionsImpl() end)
+end
+
+function SL:RefreshOptionsImpl()
   if not self.options or not self.options:IsShown() then return end
   -- clear all children of the scrollable content frame (both the matrix and
   -- the guild cards) — no partial reuse; we rebuild fresh on every refresh
@@ -636,6 +702,20 @@ function SL:RefreshOptions()
 
   content:SetHeight(math.max(1, -y + 8))
 
+  if self.soulboundFooter then
+    if self.db.settings.includeSoulbound then
+      self.soulboundFooter:SetText("Soulbound items are counted.")
+    else
+      local stacks, units = self:GetSoulboundExcluded()
+      if stacks > 0 then
+        self.soulboundFooter:SetText(string.format("Excluding %d soulbound item%s across %d entr%s.",
+          units, units == 1 and "" or "s", stacks, stacks == 1 and "y" or "ies"))
+      else
+        self.soulboundFooter:SetText("No soulbound items recorded.")
+      end
+    end
+  end
+
   local stale = self.GetStaleSources and self:GetStaleSources() or {}
   if self.staleFooter then
     if #stale == 0 then
@@ -653,7 +733,7 @@ function SL:RelayoutSources() self:RefreshOptions() end
 
 function SL:InitializeUI()
   local frame = CreateFrame("Frame", "GoblinFrame", UIParent, BackdropTemplateMixin and "BackdropTemplate" or nil)
-  frame:SetSize(math.min(1200, math.max(790, self.db.window.width or 790)), math.min(900, math.max(450, self.db.window.height or 650))); frame:SetPoint("CENTER"); frame:SetMovable(true); frame:SetResizable(true); frame:EnableMouse(true); frame:EnableMouseWheel(true); frame:SetClampedToScreen(true)
+  frame:SetSize(math.min(1400, math.max(790, self.db.window.width or 790)), math.min(1000, math.max(380, self.db.window.height or 650))); frame:SetPoint("CENTER"); frame:SetMovable(true); frame:SetResizable(true); frame:EnableMouse(true); frame:EnableMouseWheel(true); frame:SetClampedToScreen(true)
   frame:SetFrameStrata("HIGH")
   frame:SetToplevel(true)
   -- Escape closes the window (WoW's standard convention). Guard against
@@ -663,7 +743,16 @@ function SL:InitializeUI()
     for _, name in ipairs(UISpecialFrames) do if name == "GoblinFrame" then already = true; break end end
     if not already then table.insert(UISpecialFrames, "GoblinFrame") end
   end
-  frame:SetResizeBounds(790, 450, 1200, 900)
+  -- SetResizeBounds is the modern call; older Classic builds only have the
+  -- SetMinResize/SetMaxResize pair. The minimum height is deliberately low --
+  -- the Summary tab scrolls now instead of hanging its bottom row outside the
+  -- frame, so there's no reason to force a tall window.
+  if frame.SetResizeBounds then
+    frame:SetResizeBounds(790, 380, 1400, 1000)
+  else
+    if frame.SetMinResize then frame:SetMinResize(790, 380) end
+    if frame.SetMaxResize then frame:SetMaxResize(1400, 1000) end
+  end
   frame:RegisterForDrag("LeftButton"); frame:SetScript("OnDragStart", frame.StartMoving); frame:SetScript("OnDragStop", frame.StopMovingOrSizing)
   Backdrop(frame, 1, COLORS.primaryAlt); frame:Hide(); self.frame = frame
   local titleBar = CreateFrame("Frame", nil, frame, BackdropTemplateMixin and "BackdropTemplate" or nil)
@@ -679,26 +768,45 @@ function SL:InitializeUI()
   tabInventory:SetSize(72, 22); tabInventory:SetPoint("LEFT", tabSummary, "RIGHT", 8, 0)
   tabInventory.text = tabInventory:CreateFontString(nil, "OVERLAY", "GameFontNormal")
   tabInventory.text:SetPoint("CENTER"); tabInventory.text:SetFont(BODY_BOLD_FONT, 13); tabInventory.text:SetText("Inventory")
+  local tabMail = CreateFrame("Button", nil, titleBar)
+  tabMail:SetSize(72, 22); tabMail:SetPoint("LEFT", tabInventory, "RIGHT", 8, 0)
+  tabMail.text = tabMail:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+  tabMail.text:SetPoint("CENTER"); tabMail.text:SetFont(BODY_BOLD_FONT, 13); tabMail.text:SetText("Mail")
+  -- Urgency badge: a small count of mail inside the warning window, so you can
+  -- see something needs collecting without opening the tab.
+  tabMail.badge = tabMail:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+  tabMail.badge:SetPoint("LEFT", tabMail.text, "RIGHT", 3, 5)
+  tabMail.badge:SetFont(BODY_BOLD_FONT, 10)
   local tabCoverage = CreateFrame("Button", nil, titleBar)
-  tabCoverage:SetSize(72, 22); tabCoverage:SetPoint("LEFT", tabInventory, "RIGHT", 8, 0)
+  tabCoverage:SetSize(72, 22); tabCoverage:SetPoint("LEFT", tabMail, "RIGHT", 8, 0)
   tabCoverage.text = tabCoverage:CreateFontString(nil, "OVERLAY", "GameFontNormal")
   tabCoverage.text:SetPoint("CENTER"); tabCoverage.text:SetFont(BODY_BOLD_FONT, 13); tabCoverage.text:SetText("Coverage")
   self.sectionTabs = {
-    summary = tabSummary, inventory = tabInventory, coverage = tabCoverage,
+    summary = tabSummary, inventory = tabInventory, mail = tabMail, coverage = tabCoverage,
     updateHighlight = function()
-      local tabs = { summary = tabSummary, inventory = tabInventory, coverage = tabCoverage }
+      local tabs = { summary = tabSummary, inventory = tabInventory, mail = tabMail, coverage = tabCoverage }
       for mode, tab in pairs(tabs) do
         local c = self.uiMode == mode and COLORS.indicator or COLORS_SUBTLE
         tab.text:SetTextColor(c[1], c[2], c[3])
+      end
+      local urgent = self.GetMailUrgency and self:GetMailUrgency() or 0
+      if urgent > 0 then
+        tabMail.badge:SetText(tostring(urgent))
+        tabMail.badge:SetTextColor(SL.THEME.orange[1], SL.THEME.orange[2], SL.THEME.orange[3])
+      else
+        tabMail.badge:SetText("")
       end
     end,
   }
   tabSummary:SetScript("OnClick", function() self:ShowSummary() end)
   tabInventory:SetScript("OnClick", function() self:ShowInventory() end)
+  tabMail:SetScript("OnClick", function() self:ShowMail() end)
   tabCoverage:SetScript("OnClick", function() self:ShowCoverage() end)
   local close = Button(titleBar, "×", 24, function() frame:Hide() end); close:SetPoint("RIGHT", -3, 0)
   local options = Button(titleBar, "Sources", 70, function() self.options:SetShown(not self.options:IsShown()); self:RefreshOptions() end); options:SetPoint("RIGHT", close, "LEFT", -6, 0)
   local history = Button(titleBar, "History", 66, function() self:ToggleHistory() end); history:SetPoint("RIGHT", options, "LEFT", -6, 0)
+  local appearance = Button(titleBar, "Appearance", 86, function() if self.ToggleAppearance then self:ToggleAppearance() end end)
+  appearance:SetPoint("RIGHT", history, "LEFT", -6, 0)
   local search = Input(frame, 270, 22); search:SetPoint("TOPLEFT", 10, -38)
   search:SetScript("OnTextChanged", function() self:RefreshUI() end); self.search = search
   local hint = Text(search, "LEFT"); hint:SetPoint("LEFT", 6, 0); hint:SetText("Filter by keyword"); hint:SetTextColor(0.5, 0.54, 0.58)
@@ -768,13 +876,7 @@ function SL:InitializeUI()
   self.visibleRows = 25
   local function UpdateLayout()
     self.db.window.width, self.db.window.height = frame:GetWidth(), frame:GetHeight()
-    local extraWidth = frame:GetWidth() - 790
-    header:SetWidth(766 + extraWidth)
-    self.headers.value:SetWidth(130 + extraWidth)
-    for _, row in ipairs(self.rows) do
-      row:SetWidth(766 + extraWidth)
-      row.columns.value:SetWidth(124 + extraWidth)
-    end
+    self:LayoutColumns()
     self.visibleRows = math.max(1, math.min(MAX_VISIBLE_ROWS, math.floor((frame:GetHeight() - 131) / ROW_HEIGHT)))
     self:RefreshUI()
   end
@@ -784,8 +886,10 @@ function SL:InitializeUI()
   end)
   self:CreateOptions()
   if self.CreateSummary then self:CreateSummary() end
+  if self.CreateMailTab then self:CreateMailTab() end
   if self.CreateCoverageTab then self:CreateCoverageTab() end
   self.uiMode = "inventory"
+  self:LayoutColumns()
   self:ApplyUIMode()
   self:RefreshUI()
 end
@@ -798,7 +902,8 @@ function SL:RefreshUI(fromScroll)
   -- header(24)+footer(38)+padding.
   self.visibleRows = math.max(1, math.min(MAX_VISIBLE_ROWS, math.floor((self.frame:GetHeight() - 131) / ROW_HEIGHT)))
   for key, header in pairs(self.headers or {}) do header.indicator:SetShown(key == self.db.settings.sort) end
-  local rows, itemValue, gold = self:BuildLedger(self.search and self.search:GetText())
+  local filterText = self.search and strtrim(self.search:GetText() or "") or ""
+  local rows, itemValue, gold, grandValue = self:BuildLedger(filterText)
   self.ledgerRows = rows
   local maximum = math.max(0, #rows - self.visibleRows)
   self.scroll:SetMinMaxValues(0, maximum)
@@ -808,6 +913,10 @@ function SL:RefreshUI(fromScroll)
     local row = rows[index + offset]; widget.data = row
     if index <= (self.visibleRows or 25) and row then
       widget:Show()
+      local stripe = ((self.db.settings.appearance or {}).stripes ~= false)
+        and (((index + offset) % 2 == 0) and T.bgRowAlt or T.bgRow)
+        or COLORS.primary
+      widget.bg:SetColorTexture(stripe[1], stripe[2], stripe[3], 1)
       local displayLink = row.link
       if displayLink and displayLink:find("%[%]") then
         local resolvedName = row.name or (row.itemID and GetItemInfo(row.itemID))
@@ -823,12 +932,25 @@ function SL:RefreshUI(fromScroll)
       widget.columns.value:SetText(self:FormatMoney(row.value))
     else widget:Hide() end
   end
-  self.summary:SetText(string.format("Items: %s   Gold: %s   |cffffd839Net worth: %s|r", self:FormatMoney(itemValue), self:FormatMoney(gold), self:FormatMoney(itemValue + gold)))
+  -- The footer always reports the true net worth. It used to report the
+  -- search-filtered total under a "Net worth" label, which was both wrong on
+  -- screen and -- because the same number was handed to MaybeSnapshot --
+  -- wrote filtered totals into the trend history.
+  local accent = SL.Hex(SL.THEME.gold)
+  if filterText ~= "" then
+    self.summary:SetText(string.format("Filtered: %s   Items: %s   Gold: %s   |cff%sNet worth: %s|r",
+      self:FormatMoney(itemValue), self:FormatMoney(grandValue), self:FormatMoney(gold),
+      accent, self:FormatMoney(grandValue + gold)))
+  else
+    self.summary:SetText(string.format("Items: %s   Gold: %s   |cff%sNet worth: %s|r",
+      self:FormatMoney(grandValue), self:FormatMoney(gold), accent, self:FormatMoney(grandValue + gold)))
+  end
   self:RefreshOptions()
-  if self.MaybeSnapshot then self:MaybeSnapshot(itemValue, gold) end
+  if self.MaybeSnapshot then self:MaybeSnapshot(grandValue, gold) end
   if self.RefreshHistoryPanel then self:RefreshHistoryPanel() end
   if self.RefreshSummary then self:RefreshSummary() end
   if self.RefreshCoverage then self:RefreshCoverage() end
+  if self.RefreshMail then self:RefreshMail() end
 end
 
 function SL:ToggleUI()

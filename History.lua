@@ -10,10 +10,14 @@ local SNAPSHOT_CAP = 720
 local CHART_LOOKBACK = 7 * 86400
 local CHART_BUCKET_MAX = 168
 
-local BAR_COLOR = { 1.00, 0.85, 0.22, 0.90 }
-local GOLD_COLOR = { 1.00, 0.85, 0.22, 0.35 }
-local GRID_COLOR = { 0.28, 0.32, 0.34, 1.00 }
-local LABEL_COLOR = { 0.72, 0.75, 0.72, 1.00 }
+-- Aliases, not copies: SL.THEME's tables are rewritten in place when the theme
+-- changes, so holding the table itself means the chart follows the palette.
+local T = SL.THEME
+local BAR_COLOR   = T.green
+local GOLD_COLOR  = T.gold
+local GRID_COLOR  = T.edge
+local LABEL_COLOR = T.dim
+local BAR_ALPHA, GOLD_ALPHA = 0.90, 0.45
 
 function SL:MaybeSnapshot(itemValue, gold)
   self.db.history = self.db.history or {}
@@ -21,10 +25,138 @@ function SL:MaybeSnapshot(itemValue, gold)
   local now = time()
   local last = history[#history]
   if last and (now - last.t) < SNAPSHOT_INTERVAL then return end
+  -- Don't record while the Sources panel is open: the user is mid-edit and
+  -- every checkbox click would otherwise stamp a half-configured total.
+  if self.options and self.options:IsShown() then return end
+  -- Don't record before TSM can price anything, or the trend line picks up a
+  -- phantom crash every time the addon loads ahead of its dependency.
+  if self.IsPricingReady and not self:IsPricingReady() then return end
   local total = (itemValue or 0) + (gold or 0)
   if total <= 0 and not last then return end
-  history[#history + 1] = { t = now, net = total, items = itemValue or 0, gold = gold or 0 }
+  -- A snapshot with no fingerprint can never be compared fairly, so don't
+  -- write one at all rather than leaving a landmine in the trend line.
+  local cfg = self.GetConfigFingerprint and self:GetConfigFingerprint() or nil
+  if cfg == nil then return end
+  history[#history + 1] = {
+    t = now, net = total, items = itemValue or 0, gold = gold or 0, cfg = cfg,
+  }
   while #history > SNAPSHOT_CAP do table.remove(history, 1) end
+end
+
+-- Oldest snapshot inside the window that was taken under *exactly* the current
+-- source selection. Returns nil plus a reason when there is nothing fair to
+-- compare against, so callers can say so instead of reporting a bogus swing.
+--
+-- Snapshots with no fingerprint at all (written by builds from before
+-- GetConfigFingerprint existed) are deliberately NOT comparable. Accepting
+-- them was the reason a trend could still read "down 27%" off a total that
+-- included a guild bank the user had since switched off.
+function SL:GetComparableBaseline(windowSeconds)
+  local history = self.db.history or {}
+  if #history < 2 then return nil, "need more history" end
+  local current = self.GetConfigFingerprint and self:GetConfigFingerprint() or nil
+  if current == nil then return nil, "need more history" end
+  local cutoff = time() - (windowSeconds or CHART_LOOKBACK)
+  local latest = history[#history]
+  local baseline, sawMismatch, sawLegacy
+  for _, snapshot in ipairs(history) do
+    if snapshot.t >= cutoff and snapshot ~= latest then
+      if snapshot.cfg == current then
+        baseline = baseline or snapshot
+      elseif snapshot.cfg == nil then
+        sawLegacy = true
+      else
+        sawMismatch = true
+      end
+    end
+  end
+  if not baseline then
+    if sawMismatch or sawLegacy then return nil, "sources changed" end
+    return nil, "need more history"
+  end
+  if baseline.net <= 0 then return nil, "need more history" end
+  return baseline, nil
+end
+
+-- The trend, expressed against a net worth the caller computed *now* rather
+-- than against the newest stored snapshot. Snapshots are hourly, so comparing
+-- snapshot-to-snapshot meant the headline number could lag reality by an hour
+-- and, worse, the newest snapshot's own fingerprint was never checked.
+function SL:GetTrend(windowSeconds, currentNet)
+  local baseline, reason = self:GetComparableBaseline(windowSeconds)
+  if not baseline then return nil, reason end
+  local now = time()
+  local diff = currentNet - baseline.net
+  return {
+    baseline = baseline,
+    net = currentNet,
+    diff = diff,
+    pct = diff / baseline.net * 100,
+    seconds = now - baseline.t,
+    days = math.max(1, math.floor((now - baseline.t) / 86400)),
+  }
+end
+
+-- Drop every snapshot that can't be compared against the current source
+-- selection. Cheaper than a full reset: whatever was recorded under today's
+-- configuration survives, so the trend keeps whatever history is still valid.
+function SL:PruneHistory()
+  local history = self.db.history or {}
+  local current = self.GetConfigFingerprint and self:GetConfigFingerprint() or nil
+  if current == nil then
+    print("|cffffd839Goblin:|r can't fingerprint the current sources yet — try again once TSM has loaded.")
+    return
+  end
+  local kept, dropped = {}, 0
+  for _, snapshot in ipairs(history) do
+    if snapshot.cfg == current then kept[#kept + 1] = snapshot else dropped = dropped + 1 end
+  end
+  self.db.history = kept
+  print(string.format("|cffffd839Goblin:|r dropped %d snapshot%s taken under a different source selection, kept %d.",
+    dropped, dropped == 1 and "" or "s", #kept))
+  if self.RefreshUI then self:RefreshUI() end
+end
+
+-- Says out loud what the trend widget is doing, including why it might be
+-- refusing to show a number.
+function SL:ExplainTrend()
+  local history = self.db.history or {}
+  local current = self.GetConfigFingerprint and self:GetConfigFingerprint() or nil
+  local cutoff = time() - CHART_LOOKBACK
+  local inWindow, matching, legacy, mismatched = 0, 0, 0, 0
+  for _, snapshot in ipairs(history) do
+    if snapshot.t >= cutoff then
+      inWindow = inWindow + 1
+      if snapshot.cfg == nil then legacy = legacy + 1
+      elseif snapshot.cfg == current then matching = matching + 1
+      else mismatched = mismatched + 1 end
+    end
+  end
+  print("|cffffd839Goblin trend diagnostics|r")
+  print(string.format("  source fingerprint now: |cffffffff%s|r", tostring(current)))
+  print(string.format("  snapshots: %d total, %d in the last 7 days", #history, inWindow))
+  print(string.format("  of those: |cff30d97f%d comparable|r · |cffff9d33%d from a different source selection|r · |cff9c9c9c%d with no fingerprint (pre-0.9 builds)|r",
+    matching, mismatched, legacy))
+  local _, itemValue, gold, grandValue = self:BuildLedger("")
+  local net = (grandValue or itemValue or 0) + (gold or 0)
+  local trend, reason = self:GetTrend(CHART_LOOKBACK, net)
+  if trend then
+    print(string.format("  comparing |cffffffff%s|r now against |cffffffff%s|r from %s (%d day%s ago) → %s%.1f%%|r",
+      self:FormatMoney(net), self:FormatMoney(trend.baseline.net),
+      date("%Y-%m-%d %H:%M", trend.baseline.t), trend.days, trend.days == 1 and "" or "s",
+      trend.pct >= 0 and "|cff30d97f+" or "|cffff9d33", trend.pct))
+  else
+    print(string.format("  no trend shown: |cffff9d33%s|r", tostring(reason)))
+  end
+  if mismatched > 0 or legacy > 0 then
+    print("  |cffababab/goblin history prune drops the incomparable ones and keeps the rest.|r")
+  end
+end
+
+function SL:ResetHistory()
+  self.db.history = {}
+  print("|cffffd839Goblin:|r net-worth history cleared. A fresh baseline is recorded on the next refresh.")
+  if self.RefreshUI then self:RefreshUI() end
 end
 
 local function FormatMoneyShort(copper)
@@ -52,8 +184,8 @@ function SL:CreateHistoryPanel()
   panel:SetFrameLevel(self.frame:GetFrameLevel() + 5); panel:Hide()
   if panel.SetBackdrop then
     panel:SetBackdrop({ bgFile = "Interface\\Buttons\\WHITE8X8", edgeFile = "Interface\\Buttons\\WHITE8X8", edgeSize = 1 })
-    panel:SetBackdropColor(0x14 / 255, 0x16 / 255, 0x16 / 255, 1)
-    panel:SetBackdropBorderColor(0x42 / 255, 0x4c / 255, 0x4f / 255, 1)
+    panel:SetBackdropColor(T.bgDeep[1], T.bgDeep[2], T.bgDeep[3], 1)
+    panel:SetBackdropBorderColor(T.chrome[1], T.chrome[2], T.chrome[3], 1)
   end
   self.historyPanel = panel
 
@@ -120,23 +252,39 @@ function SL:RefreshHistoryPanel()
     snapshots = reduced; n = #snapshots
   end
 
+  -- Bars whose fingerprint doesn't match the current source selection are
+  -- still drawn (they happened) but greyed out, and the headline delta only
+  -- ever spans comparable snapshots. Otherwise switching a guild bank off
+  -- leaves a permanent cliff in the chart with no explanation.
+  local current = self.GetConfigFingerprint and self:GetConfigFingerprint() or nil
   local yMax, yMin = 0, math.huge
-  local totalNow, totalOldest, oldest, newest
+  local oldest, newest, incomparable = nil, nil, 0
   for _, s in ipairs(snapshots) do
     if s.net > yMax then yMax = s.net end
     if s.net < yMin then yMin = s.net end
-    if not oldest or s.t < oldest.t then oldest = s end
-    if not newest or s.t > newest.t then newest = s end
+    s.comparable = (current ~= nil and s.cfg == current)
+    if s.comparable then
+      if not oldest or s.t < oldest.t then oldest = s end
+      if not newest or s.t > newest.t then newest = s end
+    else
+      incomparable = incomparable + 1
+    end
   end
   if yMax <= 0 then yMax = 1 end
-  totalNow = newest and newest.net or 0
-  totalOldest = oldest and oldest.net or 0
-  local delta = totalNow - totalOldest
-  local sign = delta >= 0 and "|cff30d97fup|r" or "|cffff5555down|r"
-  panel.subtitle:SetText(string.format("Now %s · %s %s over %s (from %s)",
-    SL:FormatMoney(totalNow), sign, SL:FormatMoney(math.abs(delta)),
-    (oldest and FormatWhen(now - oldest.t)) or "?",
-    (oldest and SL:FormatMoney(totalOldest)) or "?"))
+  local totalNow = newest and newest.net or 0
+  local totalOldest = oldest and oldest.net or 0
+  local note = incomparable > 0
+    and string.format("   |cffff9d33%d snapshot%s from a different source selection (greyed)|r",
+      incomparable, incomparable == 1 and "" or "s") or ""
+  if oldest and newest and oldest ~= newest then
+    local delta = totalNow - totalOldest
+    local sign = delta >= 0 and "|cff30d97fup|r" or "|cffff5555down|r"
+    panel.subtitle:SetText(string.format("Now %s · %s %s over %s (from %s)%s",
+      SL:FormatMoney(totalNow), sign, SL:FormatMoney(math.abs(delta)),
+      FormatWhen(now - oldest.t), SL:FormatMoney(totalOldest), note))
+  else
+    panel.subtitle:SetText("Not enough history under the current source selection yet." .. note)
+  end
   panel.axisYMax:SetText(FormatMoneyShort(yMax))
   panel.minLabel:SetText("Low: " .. SL:FormatMoney(yMin == math.huge and 0 or yMin))
   panel.maxLabel:SetText("High: " .. SL:FormatMoney(yMax))
@@ -181,12 +329,20 @@ function SL:RefreshHistoryPanel()
     local x = (i - 1) * barSpacing
     local netFrac = snap.net / yMax
     local goldFrac = (snap.gold or 0) / yMax
-    goldBar:SetColorTexture(GOLD_COLOR[1], GOLD_COLOR[2], GOLD_COLOR[3], GOLD_COLOR[4])
+    if snap.comparable then
+      goldBar:SetColorTexture(GOLD_COLOR[1], GOLD_COLOR[2], GOLD_COLOR[3], GOLD_ALPHA)
+    else
+      goldBar:SetColorTexture(0.42, 0.44, 0.43, 0.30)
+    end
     goldBar:ClearAllPoints()
     goldBar:SetPoint("BOTTOMLEFT", x, 0)
     goldBar:SetSize(barWidth, math.max(1, goldFrac * h))
     goldBar:Show()
-    bar:SetColorTexture(BAR_COLOR[1], BAR_COLOR[2], BAR_COLOR[3], BAR_COLOR[4])
+    if snap.comparable then
+      bar:SetColorTexture(BAR_COLOR[1], BAR_COLOR[2], BAR_COLOR[3], BAR_ALPHA)
+    else
+      bar:SetColorTexture(0.42, 0.44, 0.43, 0.45)
+    end
     bar:ClearAllPoints()
     bar:SetPoint("BOTTOMLEFT", x, math.max(1, goldFrac * h))
     bar:SetSize(barWidth, math.max(1, (netFrac - goldFrac) * h))
